@@ -26,7 +26,6 @@ body{background:var(--ink);color:var(--text);font-family:var(--fn);min-height:10
 /* ── LOADER ── */
 #loader{position:fixed;inset:0;background:var(--ink);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:9999;transition:opacity .4s;}
 #loader.out{opacity:0;pointer-events:none;}
-#loader.syncing .loader-ring{border-top-color:var(--gold);}
 .loader-ring{width:40px;height:40px;border:3px solid var(--line);border-top-color:var(--gold);border-radius:50%;animation:spin .7s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 .loader-text{font-family:var(--mo);font-size:11px;color:var(--fog2);letter-spacing:.12em;text-transform:uppercase;}
@@ -322,7 +321,7 @@ tbody td{padding:8px 12px;font-size:11px;vertical-align:middle;}
 <body>
 
 <!-- LOADER -->
-<div id="loader"><div class="loader-ring"></div><div class="loader-text" id="loaderText">Loading DTR…</div></div>
+<div id="loader"><div class="loader-ring"></div><div class="loader-text">Loading DTR…</div></div>
 
 <!-- ONBOARDING -->
 <div id="onboarding">
@@ -568,7 +567,7 @@ const DAYS   = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Sat
 const MONS   = ['January','February','March','April','May','June','July','August','September','October','November','December'];
 const SD     = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 const DB_NAME = 'ojt_dtr_v4';
-const DB_VER  = 2;
+const DB_VER  = 1;
 
 // ════════════════════════════════════════
 // IN-MEMORY STATE
@@ -582,7 +581,7 @@ let activeId = null;
 let wkTarget = 40;
 let calY, calM, selDate = null;
 let deferredPrompt = null;
-let syncing = false, syncTimer = null, pendingWrite = false;
+let syncing = false, syncTimer = null;
 
 // ════════════════════════════════════════
 // INDEXEDDB
@@ -597,13 +596,7 @@ function openDB() {
       if (!d.objectStoreNames.contains('entries')) {
         const es = d.createObjectStore('entries', {keyPath: 'id'});
         es.createIndex('traineeId', 'traineeId', {unique: false});
-      }
-      if (e.oldVersion < 2) {
-        try {
-          const tx2 = e.target.transaction;
-          const es2 = tx2.objectStore('entries');
-          if (es2.indexNames.contains('dirty')) es2.deleteIndex('dirty');
-        } catch(_) {}
+        es.createIndex('dirty', 'dirty', {unique: false});
       }
       if (!d.objectStoreNames.contains('journals'))
         d.createObjectStore('journals', {keyPath: 'key'});
@@ -777,27 +770,24 @@ async function flushQueue() {
 // WRITE HELPERS — Supabase first, queue if offline
 // ═══════════════════════════════════════
 async function writeUpsert(table, rows, col='id') {
-  pendingWrite = true;
-  try {
-    if (SB_OK && navigator.onLine) {
-      const ok = await sbUpsert(table, rows, col);
-      if (!ok) await enqueue('upsert', table, rows, col);
-    } else {
-      await enqueue('upsert', table, rows, col);
-    }
-  } finally { pendingWrite = false; }
+  if (SB_OK && navigator.onLine) {
+    const ok = await sbUpsert(table, rows, col);
+    if (!ok) await enqueue('upsert', table, rows, col);
+  } else {
+    await enqueue('upsert', table, rows, col);
+  }
 }
 
 async function writeDelete(table, ids, col='id') {
-  pendingWrite = true;
-  try {
-    if (SB_OK && navigator.onLine) {
-      const ok = await sbDeleteRows(table, ids, col);
-      if (!ok) await enqueue('delete', table, ids, col);
-    } else {
-      await enqueue('delete', table, ids, col);
-    }
-  } finally { pendingWrite = false; }
+  console.log('[writeDelete] table:', table, 'ids:', ids, 'online:', navigator.onLine, 'SB_OK:', SB_OK);
+  if (SB_OK && navigator.onLine) {
+    const ok = await sbDeleteRows(table, ids, col);
+    console.log('[writeDelete] result:', ok);
+    if (!ok) await enqueue('delete', table, ids, col);
+  } else {
+    console.log('[writeDelete] offline — queuing');
+    await enqueue('delete', table, ids, col);
+  }
 }
 
 // ═══════════════════════════════════════
@@ -815,11 +805,11 @@ function setSyncUI(state, msg) {
 function scheduleSync(delay=1500) {
   if (!SB_OK || !navigator.onLine) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(() => { if (!pendingWrite) doSync(); }, delay);
+  syncTimer = setTimeout(doSync, delay);
 }
 
 async function doSync() {
-  if (!SB_OK || !navigator.onLine || syncing || pendingWrite) return;
+  if (!SB_OK || !navigator.onLine || syncing) return;
   syncing = true; setSyncUI('sync','Syncing…');
   try {
     await flushQueue();
@@ -906,44 +896,23 @@ async function pullRemote() {
 // INIT
 // ════════════════════════════════════════
 window.onload = async () => {
-  const setLoaderText = t => {
-    const el = document.getElementById('loaderText');
-    if (el) el.textContent = t;
-  };
-
-  // Step 1 — open IDB and load local data
-  setLoaderText('Opening local database…');
-  try { await openDB(); await loadFromIDB(); }
-  catch (err) { console.error('IDB error:', err); }
-
-  // Step 2 — if no local data but Supabase is configured, try pulling from server first
-  // This avoids showing the onboarding form when data already exists on another device
-  if (trainees.length === 0 && SB_OK && navigator.onLine) {
-    setLoaderText('Checking server for existing data…');
-    try {
-      await pullRemote();  // pulls trainees/entries/journals/statuses into memory + IDB
-    } catch (err) {
-      console.warn('Initial sync failed:', err);
-    }
+  try {
+    await openDB();
+    await loadFromIDB();
+  } catch (err) {
+    console.error('IDB error:', err);
   }
+  document.getElementById('loader').classList.add('out');
+  setTimeout(() => document.getElementById('loader').remove(), 500);
 
-  // Step 3 — hide loader
-  const loaderEl = document.getElementById('loader');
-  if (loaderEl) {
-    loaderEl.classList.add('out');
-    setTimeout(() => loaderEl.remove(), 500);
-  }
-
-  // Step 4 — set defaults
   const n = new Date(); calY = n.getFullYear(); calM = n.getMonth();
   const y = n.getFullYear(), mo = String(n.getMonth()+1).padStart(2,'0'), d = String(n.getDate()).padStart(2,'0');
   document.getElementById('e-date').value = `${y}-${mo}-${d}`;
+
   buildSwatches('ob-swatches');
   buildSwatches('t-swatches');
 
-  // Step 5 — route to app or onboarding
   if (trainees.length === 0) {
-    // Still no data after sync attempt — show onboarding
     document.getElementById('onboarding').classList.add('show');
   } else {
     if (!activeId || !trainees.find(t => t.id === activeId))
@@ -965,13 +934,9 @@ async function obSubmit() {
   if (!name) { toast('Enter your name.', true); return; }
   if (!hrs || hrs <= 0) { toast('Enter valid hours.', true); return; }
   const id = Date.now();
-  const ts = new Date().toISOString();
-  trainees.push({id, name, company: co, required: hrs, color, updatedAt: ts});
+  trainees.push({id, name, company: co, required: hrs, color, updatedAt: new Date().toISOString(), dirty: 1});
   activeId = id;
   await persistAll();
-  await writeUpsert('ojt_trainees', [{
-    id: String(id), name, company: co || '', required: hrs, color, updated_at: ts
-  }], 'id');
   document.getElementById('onboarding').classList.remove('show');
   renderAll(); setupPWA(); initSync();
   toast(`Welcome, ${name}!`);
@@ -1033,22 +998,15 @@ async function saveTrainee() {
   const ts  = new Date().toISOString();
   if (eid) {
     const i = trainees.findIndex(t => t.id == eid);
-    if (i > -1) trainees[i] = {...trainees[i], name, company: co, required: hrs, color, updatedAt: ts};
+    if (i > -1) trainees[i] = {...trainees[i], name, company: co, required: hrs, color, updatedAt: ts, dirty: 1};
     toast('Trainee updated!');
   } else {
     const id = Date.now();
-    trainees.push({id, name, company: co, required: hrs, color, updatedAt: ts});
+    trainees.push({id, name, company: co, required: hrs, color, updatedAt: ts, dirty: 1});
     activeId = id;
     toast('Trainee added!');
   }
-  const saved = eid ? trainees.find(t => t.id == eid) : trainees[trainees.length-1];
-  await persistAll();
-  if (saved) await writeUpsert('ojt_trainees', [{
-    id: String(saved.id), name: saved.name, company: saved.company||'',
-    required: saved.required, color: saved.color,
-    updated_at: saved.updatedAt || new Date().toISOString()
-  }], 'id');
-  closeOv('traineeOv'); renderAll();
+  await persistAll(); closeOv('traineeOv'); renderAll();
 }
 async function deleteTrainee() {
   const eid = Number(document.getElementById('traineeEditId').value);
@@ -1145,7 +1103,7 @@ async function addEntry() {
   if (!entries[tid]) entries[tid] = [];
   entries[tid] = entries[tid].filter(e => e.date !== date);
   const ts = nowISO();
-  entries[tid].push({id: Date.now(), traineeId: tid, date, timeIn: tin, timeOut: tout, breakMin: brk, hours: h, updatedAt: ts});
+  entries[tid].push({id: Date.now(), traineeId: tid, date, timeIn: tin, timeOut: tout, breakMin: brk, hours: h, updatedAt: ts, dirty: 1});
   entries[tid].sort((a,b) => a.date.localeCompare(b.date));
   if (st !== 'auto') {
     if (!statuses[tid]) statuses[tid] = {};
@@ -1191,7 +1149,7 @@ async function saveEdit() {
   const h = cH(tin, tout, brk); if (h===null) { toast('Invalid time.', true); return; }
   const i = (entries[tid]||[]).findIndex(e => e.id === id); if (i===-1) return;
   const ts = nowISO();
-  entries[tid][i] = {...entries[tid][i], date, timeIn: tin, timeOut: tout, breakMin: brk, hours: h, updatedAt: ts};
+  entries[tid][i] = {...entries[tid][i], date, timeIn: tin, timeOut: tout, breakMin: brk, hours: h, updatedAt: ts, dirty: 1};
   entries[tid].sort((a,b) => a.date.localeCompare(b.date));
   if (!statuses[tid]) statuses[tid] = {};
   if (st !== 'auto') statuses[tid][date] = {status: st, updatedAt: ts};
@@ -1514,26 +1472,18 @@ function renderJP(ds) {
 
 async function setDaySt(ds, st) {
   const tid = activeId; if (!statuses[tid]) statuses[tid]={};
-  const ts = nowISO();
-  statuses[tid][ds] = {status: st, updatedAt: ts};
-  await persistAll();
-  await writeUpsert('ojt_statuses',[{key:`${tid}~~${ds}`,trainee_id:String(tid),date:ds,status:st,updated_at:ts}],'key');
-  renderAll(); if (selDate===ds) renderJP(ds);
+  statuses[tid][ds] = {status: st, updatedAt: nowISO()};
+  await persistAll(); renderAll(); if (selDate===ds) renderJP(ds);
 }
 async function clrDaySt(ds) {
   const tid = activeId; if (statuses[tid]) delete statuses[tid][ds];
-  await persistAll();
-  await writeDelete('ojt_statuses',[`${tid}~~${ds}`],'key');
-  renderAll(); if (selDate===ds) renderJP(ds);
+  await persistAll(); renderAll(); if (selDate===ds) renderJP(ds);
 }
 async function jpSave(ds) {
   const tid = activeId; const txt = document.getElementById('jpTa')?.value || '';
   if (!journals[tid]) journals[tid]={};
-  const ts = nowISO();
-  journals[tid][ds] = {text: txt, updatedAt: ts};
-  await persistAll();
-  await writeUpsert('ojt_journals',[{key:`${tid}~~${ds}`,trainee_id:String(tid),date:ds,text:txt,updated_at:ts}],'key');
-  renderCal();
+  journals[tid][ds] = {text: txt, updatedAt: nowISO()};
+  await persistAll(); renderCal();
   const s = document.getElementById('jpSaved');
   if (s) { s.classList.add('on'); setTimeout(()=>s.classList.remove('on'), 2000); }
   toast('Journal saved!');
@@ -1541,9 +1491,7 @@ async function jpSave(ds) {
 async function jpClear(ds) {
   const ta = document.getElementById('jpTa'); if (ta) ta.value='';
   const tid = activeId; if (journals[tid]) journals[tid][ds]={text:'',updatedAt:nowISO()};
-  await persistAll();
-  await writeDelete('ojt_journals',[`${tid}~~${ds}`],'key');
-  renderCal(); toast('Cleared.');
+  await persistAll(); renderCal(); toast('Cleared.');
 }
 async function jpQuickAdd(ds) {
   const tin = document.getElementById('qIn')?.value;
@@ -1551,27 +1499,14 @@ async function jpQuickAdd(ds) {
   const brk = parseInt(document.getElementById('qBrk')?.value||0);
   const h   = cH(tin, tout, brk); if (h===null) { toast('Invalid time.', true); return; }
   const tid = activeId; if (!entries[tid]) entries[tid]=[];
-  const oldIds = entries[tid].filter(e=>e.date===ds).map(e=>String(e.id));
   entries[tid] = entries[tid].filter(e=>e.date!==ds);
-  const ts = nowISO();
-  const qe = {id:Date.now(),traineeId:tid,date:ds,timeIn:tin,timeOut:tout,breakMin:brk,hours:h,updatedAt:ts};
-  entries[tid].push(qe);
+  entries[tid].push({id:Date.now(),traineeId:tid,date:ds,timeIn:tin,timeOut:tout,breakMin:brk,hours:h,updatedAt:nowISO(),dirty:1});
   entries[tid].sort((a,b)=>a.date.localeCompare(b.date));
-  await persistAll();
-  if (oldIds.length) await writeDelete('ojt_entries', oldIds, 'id');
-  await writeUpsert('ojt_entries',[{
-    id:String(qe.id),trainee_id:String(tid),date:ds,
-    time_in:tin,time_out:tout,break_min:brk,hours:h,updated_at:ts
-  }],'id');
-  renderAll(); renderJP(ds); toast(`Added: ${fH(h)}`);
+  await persistAll(); renderAll(); renderJP(ds); toast(`Added: ${fH(h)}`);
 }
 async function jpDelEntry(ds) {
-  const tid = activeId;
-  const ids = (entries[tid]||[]).filter(e=>e.date===ds).map(e=>String(e.id));
-  if (entries[tid]) entries[tid]=entries[tid].filter(e=>e.date!==ds);
-  await persistAll();
-  if (ids.length) await writeDelete('ojt_entries', ids, 'id');
-  renderAll(); renderJP(ds); toast('Entry removed.');
+  const tid = activeId; if (entries[tid]) entries[tid]=entries[tid].filter(e=>e.date!==ds);
+  await persistAll(); renderAll(); renderJP(ds); toast('Entry removed.');
 }
 
 // ════════════════════════════════════════
@@ -1608,11 +1543,13 @@ function toast(msg, err=false) {
 // SYNC INIT
 // ════════════════════════════════════════
 function initSync() {
+  window.addEventListener('online',  () => { setSyncUI('sync','Back online…'); doSync(); });
+  window.addEventListener('offline', () => setSyncUI('off','Offline — changes queued'));
   if (!SB_OK) { setSyncUI('off','Supabase not configured'); return; }
   updateOnline();
   window.addEventListener('online',  () => { updateOnline(); doSync(); });
-  window.addEventListener('offline', () => updateOnline());
-  setInterval(() => { if (navigator.onLine && !syncing && !pendingWrite) doSync(); }, 60000);
+  window.addEventListener('offline', updateOnline);
+  setInterval(() => { if(navigator.onLine) doSync(); }, 30000);
   if (navigator.onLine) doSync();
 }
 function updateOnline() {
