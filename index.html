@@ -598,8 +598,8 @@ let cY,cM,selD=null,dP=null;
 // ── HARDCODED SUPABASE CREDENTIALS ──
 // Fill these in before uploading to GitHub.
 // The anon key is safe to expose — Supabase RLS controls access.
-const SB_URL_DEFAULT = 'YOUR_SUPABASE_URL';   // e.g. https://xxxx.supabase.co
-const SB_KEY_DEFAULT = 'YOUR_SUPABASE_ANON_KEY'; // eyJhbGci...
+const SB_URL_DEFAULT = 'https://edtwmxadfqhmmilucvol.supabase.co';   // e.g. https://xxxx.supabase.co
+const SB_KEY_DEFAULT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkdHdteGFkZnFobW1pbHVjdm9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MDExMjAsImV4cCI6MjA4OTM3NzEyMH0.ssNIJ6CoobfUo6FpEqF2vMIw5H427eMY5xhqH4GPMDo'; // eyJhbGci...
 let SB_URL='',SB_KEY='';
 function loadSBCfg(){
   // Use localStorage override if set, otherwise use hardcoded defaults
