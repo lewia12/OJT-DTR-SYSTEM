@@ -2,7 +2,7 @@
   "name": "OJT Daily Time Record",
   "short_name": "OJT DTR",
   "description": "On-the-Job Training Daily Time Record System",
-  "start_url": "./index.html",
+  "start_url": "./Index.html",
   "display": "standalone",
   "background_color": "#080c10",
   "theme_color": "#f5a623",
