@@ -4,7 +4,7 @@
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <meta name="theme-color" content="#080c10"/>
-<link rel="manifest" id="manifestLink"/>
+<link rel="manifest" href="./manifest.json"/>
 <title>OJT DTR System</title>
 <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;1,400&display=swap" rel="stylesheet"/>
 <style>
@@ -268,6 +268,25 @@ tbody td{padding:8px 12px;font-size:11px;vertical-align:middle;}
 .toast{position:fixed;bottom:18px;right:18px;background:var(--sf2);border:1px solid var(--bd);border-left:3px solid var(--gn);border-radius:7px;padding:9px 14px;font-size:11px;z-index:500;transform:translateX(130%);transition:transform .25s cubic-bezier(.4,0,.2,1);max-width:240px;font-family:var(--mo);}
 .toast.show{transform:translateX(0);}
 .toast.err{border-left-color:var(--rd);}
+/* ── SYNC STATUS ── */
+.sync-bar{display:flex;align-items:center;gap:7px;padding:5px 12px;background:var(--sf2);border-bottom:1px solid var(--bd);font-family:var(--mo);font-size:10px;color:var(--tx2);}
+.sync-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0;}
+.sync-dot.online{background:var(--gn);box-shadow:0 0 6px rgba(45,190,108,.5);}
+.sync-dot.offline{background:var(--tx3);}
+.sync-dot.syncing{background:var(--am);animation:pulse .8s infinite;}
+.sync-dot.error{background:var(--rd);}
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.3;}}
+.sync-btn{margin-left:auto;padding:2px 8px;border-radius:4px;border:1px solid var(--bd);background:transparent;color:var(--tx2);font-family:var(--mo);font-size:9px;cursor:pointer;transition:all .15s;}
+.sync-btn:hover{border-color:var(--am);color:var(--am);}
+.supabase-cfg{position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:600;display:none;align-items:center;justify-content:center;}
+.supabase-cfg.open{display:flex;}
+.cfg-box{background:var(--sf);border:1px solid var(--bd);border-radius:12px;padding:24px;width:460px;max-width:94vw;}
+.cfg-title{font-size:15px;font-weight:800;margin-bottom:6px;}
+.cfg-sub{font-size:10px;color:var(--tx2);font-family:var(--mo);margin-bottom:18px;line-height:1.6;}
+.cfg-steps{background:var(--bg);border:1px solid var(--bd);border-radius:7px;padding:12px 14px;margin-bottom:16px;font-size:10px;font-family:var(--mo);color:var(--tx2);line-height:2;}
+.cfg-steps b{color:var(--am);}
+.cfg-act{display:flex;gap:8px;justify-content:flex-end;margin-top:16px;}
+
 
 /* RESPONSIVE */
 @media(max-width:940px){.cal-layout{grid-template-columns:1fr;}.jp{position:static;}}
@@ -294,6 +313,14 @@ tbody td{padding:8px 12px;font-size:11px;vertical-align:middle;}
   </div>
 </div>
 
+
+<!-- SYNC STATUS BAR -->
+<div class="sync-bar" id="syncBar">
+  <div class="sync-dot offline" id="syncDot"></div>
+  <span id="syncMsg">Not connected to Supabase</span>
+  <button class="sync-btn" onclick="openCfg()" id="syncCfgBtn">⚙ Configure</button>
+  <button class="sync-btn" onclick="manualSync()" id="syncNowBtn" style="display:none">↻ Sync Now</button>
+</div>
 <!-- TRAINEE DROPDOWN -->
 <div class="tdd" id="tdd">
   <div class="tdd-hd"><div class="tdd-lbl">Switch Trainee</div><button class="btn btn-xs btn-gh" onclick="closeTdd()">✕</button></div>
@@ -479,6 +506,77 @@ tbody td{padding:8px 12px;font-size:11px;vertical-align:middle;}
   </div>
 </div>
 
+
+<!-- SUPABASE CONFIG MODAL -->
+<div class="supabase-cfg" id="sbCfg">
+  <div class="cfg-box">
+    <div class="cfg-title">⚡ Connect to Supabase</div>
+    <div class="cfg-sub">Your data will sync across devices automatically. Each device still works offline using IndexedDB — Supabase is the shared backup.</div>
+    <div class="cfg-steps">
+      <b>1.</b> Go to <b>supabase.com</b> → New Project<br/>
+      <b>2.</b> Project Settings → API → copy <b>Project URL</b> and <b>anon public key</b><br/>
+      <b>3.</b> Run the SQL below in the <b>SQL Editor</b> to create tables<br/>
+      <b>4.</b> Paste your URL and key here
+    </div>
+    <details style="margin-bottom:14px;">
+      <summary style="font-size:10px;font-family:var(--mo);color:var(--am);cursor:pointer;margin-bottom:6px;">▶ Show SQL to run in Supabase</summary>
+      <textarea readonly style="width:100%;height:200px;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:10px;color:var(--tx2);font-family:var(--mo);font-size:9px;resize:none;line-height:1.6;" onclick="this.select()">create table if not exists ojt_trainees (
+  id text primary key,
+  name text,
+  company text,
+  required numeric,
+  color text,
+  updated_at timestamptz default now()
+);
+
+create table if not exists ojt_entries (
+  id text primary key,
+  trainee_id text references ojt_trainees(id) on delete cascade,
+  date text,
+  time_in text,
+  time_out text,
+  break_min integer,
+  hours numeric,
+  updated_at timestamptz default now()
+);
+
+create table if not exists ojt_journals (
+  key text primary key,
+  trainee_id text references ojt_trainees(id) on delete cascade,
+  date text,
+  text text,
+  updated_at timestamptz default now()
+);
+
+create table if not exists ojt_statuses (
+  key text primary key,
+  trainee_id text references ojt_trainees(id) on delete cascade,
+  date text,
+  status text,
+  updated_at timestamptz default now()
+);
+
+-- Enable Row Level Security (allow all for anon key)
+alter table ojt_trainees enable row level security;
+alter table ojt_entries enable row level security;
+alter table ojt_journals enable row level security;
+alter table ojt_statuses enable row level security;
+
+create policy "allow all" on ojt_trainees for all using (true) with check (true);
+create policy "allow all" on ojt_entries for all using (true) with check (true);
+create policy "allow all" on ojt_journals for all using (true) with check (true);
+create policy "allow all" on ojt_statuses for all using (true) with check (true);</textarea>
+    </details>
+    <div class="f" style="margin-bottom:10px"><label>Supabase Project URL</label>
+      <input type="text" id="cfgUrl" placeholder="https://xxxx.supabase.co" style="font-size:11px"/></div>
+    <div class="f"><label>Anon Public Key</label>
+      <input type="text" id="cfgKey" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9…" style="font-size:11px"/></div>
+    <div class="cfg-act">
+      <button class="btn btn-gh" onclick="closeCfg()">Cancel</button>
+      <button class="btn btn-am" onclick="saveCfg()">Save &amp; Connect</button>
+    </div>
+  </div>
+</div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -490,25 +588,72 @@ const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturda
 const MONS=['January','February','March','April','May','June','July','August','September','October','November','December'];
 const SD=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 
-// In-memory state (source of truth while app is running)
+// In-memory state
 let S={trainees:[],activeId:null,eMap:{},jMap:{},stMap:{},wTarget:40};
 let cY,cM,selD=null,dP=null;
 
 // ═══════════════════════════════
+// SUPABASE CONFIG
+// ═══════════════════════════════
+let SB_URL='',SB_KEY='';
+function loadSBCfg(){SB_URL=localStorage.getItem('sb_url')||'';SB_KEY=localStorage.getItem('sb_key')||'';}
+function saveSBCfg(url,key){localStorage.setItem('sb_url',url);localStorage.setItem('sb_key',key);SB_URL=url;SB_KEY=key;}
+function hasSB(){return !!(SB_URL&&SB_KEY);}
+
+// Supabase REST helpers
+async function sbFetch(table,method='GET',body=null,params=''){
+  if(!hasSB())return null;
+  const url=`${SB_URL}/rest/v1/${table}${params}`;
+  const opts={method,headers:{'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`,'Content-Type':'application/json','Prefer':method==='POST'?'return=representation':''}};
+  if(body)opts.body=JSON.stringify(body);
+  try{const r=await fetch(url,opts);if(!r.ok){const e=await r.text();console.error('Supabase error:',e);return null;}return method==='DELETE'?true:r.json();}
+  catch(e){console.warn('Supabase fetch failed:',e);return null;}
+}
+async function sbUpsert(table,rows){
+  if(!rows.length||!hasSB())return;
+  return sbFetch(table,'POST',rows,'?on_conflict=id');
+}
+async function sbGetAll(table,filter=''){
+  if(!hasSB())return null;
+  return sbFetch(table,'GET',null,`?order=updated_at.asc${filter}`);
+}
+
+// Sync state
+let syncOnline=false,syncing=false,syncTimer=null;
+
+function setSyncStatus(state,msg){
+  const dot=document.getElementById('syncDot');
+  const msgEl=document.getElementById('syncMsg');
+  const nowBtn=document.getElementById('syncNowBtn');
+  if(!dot)return;
+  dot.className='sync-dot '+state;
+  msgEl.textContent=msg;
+  nowBtn.style.display=(state==='online'||state==='error')?'inline-block':'none';
+}
+
+// ═══════════════════════════════
 // INDEXEDDB LAYER
 // ═══════════════════════════════
-const DB_NAME='ojt_dtr';const DB_VER=1;let db=null;
+const DB_NAME='ojt_dtr';const DB_VER=2;let db=null;
 
 function openDB(){
   return new Promise((res,rej)=>{
     const req=indexedDB.open(DB_NAME,DB_VER);
     req.onupgradeneeded=e=>{
-      const d=e.target.result;
-      if(!d.objectStoreNames.contains('trainees')) d.createObjectStore('trainees',{keyPath:'id'});
-      if(!d.objectStoreNames.contains('entries')){const es=d.createObjectStore('entries',{keyPath:'id'});es.createIndex('traineeId','traineeId',{unique:false});}
-      if(!d.objectStoreNames.contains('journals')) d.createObjectStore('journals',{keyPath:'key'});
-      if(!d.objectStoreNames.contains('statuses')) d.createObjectStore('statuses',{keyPath:'key'});
+      const d=e.target.result;const ov=e.oldVersion;
+      if(!d.objectStoreNames.contains('trainees')){const ts=d.createObjectStore('trainees',{keyPath:'id'});ts.createIndex('dirty','dirty',{unique:false});}
+      if(!d.objectStoreNames.contains('entries')){const es=d.createObjectStore('entries',{keyPath:'id'});es.createIndex('traineeId','traineeId',{unique:false});es.createIndex('dirty','dirty',{unique:false});}
+      if(!d.objectStoreNames.contains('journals')){const js=d.createObjectStore('journals',{keyPath:'key'});js.createIndex('dirty','dirty',{unique:false});}
+      if(!d.objectStoreNames.contains('statuses')){const ss=d.createObjectStore('statuses',{keyPath:'key'});ss.createIndex('dirty','dirty',{unique:false});}
       if(!d.objectStoreNames.contains('settings')) d.createObjectStore('settings',{keyPath:'key'});
+      // v1→v2 migration: add indexes to existing stores
+      if(ov===1){
+        const tx=e.target.transaction;
+        ['trainees','entries','journals','statuses'].forEach(name=>{
+          const store=tx.objectStore(name);
+          if(!store.indexNames.contains('dirty')) store.createIndex('dirty','dirty',{unique:false});
+        });
+      }
     };
     req.onsuccess=e=>{db=e.target.result;res(db);};
     req.onerror=e=>rej(e.target.error);
@@ -534,7 +679,6 @@ async function loadFromDB(){
   statuses.forEach(st=>{const[tid,date]=st.key.split('_');if(!S.stMap[tid])S.stMap[tid]={};S.stMap[tid][date]=st.status;});
   const aid=settings.find(s=>s.key==='activeId');const wt=settings.find(s=>s.key==='wTarget');
   S.activeId=aid?aid.value:null;S.wTarget=wt?wt.value:40;
-  // Migrate from old localStorage if IDB is empty
   if(S.trainees.length===0){
     try{
       const old=JSON.parse(localStorage.getItem('ojt_v3')||'{}');
@@ -542,35 +686,52 @@ async function loadFromDB(){
         S.trainees=old.trainees;S.activeId=old.activeId;S.wTarget=old.wTarget||40;
         S.eMap=old.eMap||{};S.jMap=old.jMap||{};S.stMap=old.stMap||{};
         await saveS();localStorage.removeItem('ojt_v3');
-        toast('Data migrated from localStorage to IndexedDB ✓');
+        toast('Data migrated to IndexedDB ✓');
       }
     }catch(err){}
   }
 }
 
+// Get all dirty (unsynced) records from a store
+function idbGetDirty(store){
+  return new Promise((res,rej)=>{
+    try{
+      const tx=db.transaction(store,'readonly');
+      const idx=tx.objectStore(store).index('dirty');
+      const req=idx.getAll(1);
+      req.onsuccess=()=>res(req.result);
+      req.onerror=e=>rej(e.target.error);
+    }catch(e){res([]);}// index may not exist in old DB
+  });
+}
+function now_iso(){return new Date().toISOString();}
+
 async function saveS(){
+  const ts=now_iso();
   await idbClear('trainees');
-  for(const t of S.trainees) await idbPut('trainees',t);
+  for(const t of S.trainees) await idbPut('trainees',{...t,updatedAt:t.updatedAt||ts,dirty:1});
   await idbClear('entries');
   for(const tid of Object.keys(S.eMap)){
-    for(const e of S.eMap[tid]) await idbPut('entries',{...e,traineeId:parseInt(tid)});
+    for(const e of S.eMap[tid]) await idbPut('entries',{...e,traineeId:parseInt(tid),updatedAt:e.updatedAt||ts,dirty:1});
   }
   await idbClear('journals');
   for(const tid of Object.keys(S.jMap)){
     for(const date of Object.keys(S.jMap[tid])){
       const text=S.jMap[tid][date];
-      if(text) await idbPut('journals',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,text});
+      if(text) await idbPut('journals',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,text,updatedAt:ts,dirty:1});
     }
   }
   await idbClear('statuses');
   for(const tid of Object.keys(S.stMap)){
     for(const date of Object.keys(S.stMap[tid])){
       const status=S.stMap[tid][date];
-      if(status) await idbPut('statuses',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,status});
+      if(status) await idbPut('statuses',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,status,updatedAt:ts,dirty:1});
     }
   }
   await idbPut('settings',{key:'activeId',value:S.activeId});
   await idbPut('settings',{key:'wTarget',value:S.wTarget});
+  // Auto-sync after every save if online
+  scheduleSyncFlush();
 }
 
 function getAT(){return S.trainees.find(t=>t.id===S.activeId)||null;}
@@ -603,6 +764,9 @@ window.onload=async()=>{
   }
   if(!S.activeId&&S.trainees.length>0){S.activeId=S.trainees[0].id;await saveS();}
   buildSwatches();renderAll();setupPWA();
+  // Load Supabase config and start sync
+  loadSBCfg();
+  initSync();
 };
 
 
@@ -1145,10 +1309,13 @@ function toast(msg,err=false){
 // PWA
 // ═══════════════════════════════
 function setupPWA(){
-  const mf={name:'OJT DTR System',short_name:'OJT DTR',start_url:'.',display:'standalone',background_color:'#080c10',theme_color:'#080c10',description:'OJT Daily Time Record Tracker',icons:[{src:`data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23f5a623'/><text y='.9em' font-size='80' x='10'>📋</text></svg>`,sizes:'any',type:'image/svg+xml'}]};
-  const blob=new Blob([JSON.stringify(mf)],{type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  document.getElementById('manifestLink').href=url;
+  // Register service worker for offline support
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('./sw.js').then(reg=>{
+      console.log('SW registered:', reg.scope);
+    }).catch(err=>console.warn('SW registration failed:', err));
+  }
+  // Listen for install prompt
   window.addEventListener('beforeinstallprompt',e=>{
     e.preventDefault();dP=e;
     document.getElementById('pwaBtn').classList.add('vis');
@@ -1157,7 +1324,8 @@ function setupPWA(){
   window.addEventListener('appinstalled',()=>{
     document.getElementById('pwaB').classList.remove('show');
     document.getElementById('pwaBtn').classList.remove('vis');
-    toast('App installed!');
+    dP=null;
+    toast('App installed successfully! 🎉');
   });
 }
 function installPWA(){
@@ -1165,6 +1333,170 @@ function installPWA(){
   dP.prompt();dP.userChoice.then(r=>{if(r.outcome==='accepted')toast('Installing…');dP=null;});
 }
 function dismissPWA(){document.getElementById('pwaB').classList.remove('show');localStorage.setItem('pwa_d','1');}
+
+// ═══════════════════════════════
+// SUPABASE SYNC ENGINE
+// ═══════════════════════════════
+function initSync(){
+  updateOnlineStatus();
+  window.addEventListener('online', ()=>{updateOnlineStatus();syncFlush();});
+  window.addEventListener('offline',()=>updateOnlineStatus());
+  // Periodic sync every 30s when online
+  setInterval(()=>{if(syncOnline&&hasSB())syncFlush();},30000);
+  if(hasSB())setSyncStatus('syncing','Connecting to Supabase…');
+  else setSyncStatus('offline','Not connected — configure Supabase below');
+}
+
+function updateOnlineStatus(){
+  syncOnline=navigator.onLine;
+  if(!hasSB()){setSyncStatus('offline','Not connected — ⚙ Configure Supabase');return;}
+  if(syncOnline) setSyncStatus('online','Online');
+  else setSyncStatus('offline','Offline — changes saved locally');
+}
+
+function scheduleSyncFlush(){
+  if(!hasSB()||!syncOnline)return;
+  clearTimeout(syncTimer);
+  syncTimer=setTimeout(syncFlush,1200);// debounce 1.2s after last write
+}
+
+async function syncFlush(){
+  if(!hasSB()||!syncOnline||syncing)return;
+  syncing=true;setSyncStatus('syncing','Syncing…');
+  try{
+    // ── PUSH dirty local records up ──
+    const[dT,dE,dJ,dSt]=await Promise.all([
+      idbGetDirty('trainees'),idbGetDirty('entries'),
+      idbGetDirty('journals'),idbGetDirty('statuses'),
+    ]);
+    // Map to Supabase column names (snake_case)
+    const mapT=r=>({id:String(r.id),name:r.name,company:r.company||'',required:r.required,color:r.color,updated_at:r.updatedAt});
+    const mapE=r=>({id:String(r.id),trainee_id:String(r.traineeId),date:r.date,time_in:r.timeIn,time_out:r.timeOut,break_min:r.breakMin,hours:r.hours,updated_at:r.updatedAt});
+    const mapJ=r=>({key:r.key,trainee_id:String(r.traineeId),date:r.date,text:r.text||'',updated_at:r.updatedAt});
+    const mapSt=r=>({key:r.key,trainee_id:String(r.traineeId),date:r.date,status:r.status,updated_at:r.updatedAt});
+    if(dT.length) await sbUpsert('ojt_trainees',dT.map(mapT));
+    if(dE.length) await sbUpsert('ojt_entries',dE.map(mapE));
+    if(dJ.length) await sbUpsert('ojt_journals',dJ.map(mapJ));
+    if(dSt.length) await sbUpsert('ojt_statuses',dSt.map(mapSt));
+
+    // Mark pushed records as clean (dirty=0)
+    const clearDirty=async(store,recs)=>{
+      for(const r of recs){const clean={...r,dirty:0};await idbPut(store,clean);}
+    };
+    await clearDirty('trainees',dT);await clearDirty('entries',dE);
+    await clearDirty('journals',dJ);await clearDirty('statuses',dSt);
+
+    // ── PULL remote records, merge by updatedAt ──
+    const[rT,rE,rJ,rSt]=await Promise.all([
+      sbGetAll('ojt_trainees'),sbGetAll('ojt_entries'),
+      sbGetAll('ojt_journals'),sbGetAll('ojt_statuses'),
+    ]);
+    let changed=false;
+
+    if(rT){
+      rT.forEach(r=>{
+        const id=parseInt(r.id);const existing=S.trainees.find(t=>t.id===id);
+        const remoteNewer=!existing||(r.updated_at>=(existing.updatedAt||''));
+        if(remoteNewer){
+          const mapped={id,name:r.name,company:r.company,required:r.required,color:r.color,updatedAt:r.updated_at,dirty:0};
+          if(!existing)S.trainees.push(mapped);
+          else Object.assign(existing,mapped);
+          changed=true;
+        }
+      });
+    }
+    if(rE){
+      rE.forEach(r=>{
+        const id=parseInt(r.id);const tid=parseInt(r.trainee_id);
+        if(!S.eMap[tid])S.eMap[tid]=[];
+        const existing=S.eMap[tid].find(e=>e.id===id);
+        const remoteNewer=!existing||(r.updated_at>=(existing.updatedAt||''));
+        if(remoteNewer){
+          const mapped={id,traineeId:tid,date:r.date,timeIn:r.time_in,timeOut:r.time_out,breakMin:r.break_min,hours:r.hours,updatedAt:r.updated_at,dirty:0};
+          if(!existing)S.eMap[tid].push(mapped);
+          else Object.assign(existing,mapped);
+          changed=true;
+        }
+      });
+      Object.keys(S.eMap).forEach(tid=>{S.eMap[tid].sort((a,b)=>a.date.localeCompare(b.date));});
+    }
+    if(rJ){
+      rJ.forEach(r=>{
+        const tid=String(r.trainee_id);
+        if(!S.jMap[tid])S.jMap[tid]={};
+        // journals key = "traineeId_date"
+        const existing=S.jMap[tid][r.date];
+        // store updatedAt in jMap as meta — simple: just overwrite if remote newer
+        if(!existing||r.updated_at>=(S.jMap[tid][r.date+'__ts']||''))
+        {S.jMap[tid][r.date]=r.text;S.jMap[tid][r.date+'__ts']=r.updated_at;changed=true;}
+      });
+    }
+    if(rSt){
+      rSt.forEach(r=>{
+        const tid=String(r.trainee_id);
+        if(!S.stMap[tid])S.stMap[tid]={};
+        if(!S.stMap[tid][r.date]||(r.updated_at>=''))
+        {S.stMap[tid][r.date]=r.status;changed=true;}
+      });
+    }
+
+    // Persist merged state back to IDB (without marking dirty again)
+    await persistMerged();
+
+    if(changed)renderAll();
+    const now=new Date().toLocaleTimeString('en-PH',{hour:'2-digit',minute:'2-digit'});
+    setSyncStatus('online',`Synced · ${now}`);
+  }catch(err){
+    console.error('Sync error:',err);
+    setSyncStatus('error','Sync failed — check Supabase config');
+  }
+  syncing=false;
+}
+
+// Write merged state to IDB without marking dirty=1
+async function persistMerged(){
+  await idbClear('trainees');
+  for(const t of S.trainees) await idbPut('trainees',{...t,dirty:t.dirty||0});
+  await idbClear('entries');
+  for(const tid of Object.keys(S.eMap)){
+    for(const e of S.eMap[tid]) await idbPut('entries',{...e,traineeId:parseInt(tid),dirty:e.dirty||0});
+  }
+  await idbClear('journals');
+  for(const tid of Object.keys(S.jMap)){
+    for(const date of Object.keys(S.jMap[tid])){
+      if(date.endsWith('__ts'))continue;
+      const text=S.jMap[tid][date];const ts=S.jMap[tid][date+'__ts']||now_iso();
+      if(text) await idbPut('journals',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,text,updatedAt:ts,dirty:0});
+    }
+  }
+  await idbClear('statuses');
+  for(const tid of Object.keys(S.stMap)){
+    for(const date of Object.keys(S.stMap[tid])){
+      const status=S.stMap[tid][date];
+      if(status) await idbPut('statuses',{key:`${tid}_${date}`,traineeId:parseInt(tid),date,status,updatedAt:now_iso(),dirty:0});
+    }
+  }
+}
+
+async function manualSync(){
+  if(!hasSB()){openCfg();return;}
+  if(!syncOnline){toast('You are offline. Changes will sync when back online.');return;}
+  await syncFlush();
+}
+
+// ── SUPABASE CONFIG MODAL ──
+function openCfg(){document.getElementById('sbCfg').classList.add('open');}
+function closeCfg(){document.getElementById('sbCfg').classList.remove('open');}
+function saveCfg(){
+  const url=document.getElementById('cfgUrl').value.trim().replace(/\/$/,'');
+  const key=document.getElementById('cfgKey').value.trim();
+  if(!url||!key){toast('Enter both URL and anon key.',true);return;}
+  saveSBCfg(url,key);
+  closeCfg();
+  toast('Supabase configured! Syncing…');
+  updateOnlineStatus();
+  syncFlush();
+}
 
 // ═══════════════════════════════
 // EXPORT EXCEL
