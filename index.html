@@ -598,8 +598,8 @@ let cY,cM,selD=null,dP=null;
 // ── HARDCODED SUPABASE CREDENTIALS ──
 // Fill these in before uploading to GitHub.
 // The anon key is safe to expose — Supabase RLS controls access.
-const SB_URL_DEFAULT = 'YOUR_SUPABASE_URL';   // e.g. https://xxxx.supabase.co
-const SB_KEY_DEFAULT = 'YOUR_SUPABASE_ANON_KEY'; // eyJhbGci...
+const SB_URL_DEFAULT = 'https://edtwmxadfqhmmilucvol.supabase.coL';   // e.g. https://xxxx.supabase.co
+const SB_KEY_DEFAULT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkdHdteGFkZnFobW1pbHVjdm9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MDExMjAsImV4cCI6MjA4OTM3NzEyMH0.ssNIJ6CoobfUo6FpEqF2vMIw5H427eMY5xhqH4GPMDo'; // eyJhbGci...
 let SB_URL='',SB_KEY='';
 function loadSBCfg(){
   // Use localStorage override if set, otherwise use hardcoded defaults
@@ -616,16 +616,39 @@ function hasSB(){return !!(SB_URL&&SB_KEY);}
 async function sbFetch(table,method='GET',body=null,params=''){
   if(!hasSB())return null;
   const url=`${SB_URL}/rest/v1/${table}${params}`;
-  const opts={method,headers:{'apikey':SB_KEY,'Authorization':`Bearer ${SB_KEY}`,'Content-Type':'application/json','Prefer':method==='POST'?'return=representation,resolution=merge-duplicates':''}};
+  const opts={method,headers:{
+    'apikey':SB_KEY,
+    'Authorization':`Bearer ${SB_KEY}`,
+    'Content-Type':'application/json',
+    'Prefer':'return=minimal'
+  }};
   if(body)opts.body=JSON.stringify(body);
-  try{const r=await fetch(url,opts);if(!r.ok){const e=await r.text();console.error('Supabase error:',e);return null;}return method==='DELETE'?true:r.json();}
-  catch(e){console.warn('Supabase fetch failed:',e);return null;}
+  try{
+    const r=await fetch(url,opts);
+    if(!r.ok){const e=await r.text();console.error('Supabase error:',e);return null;}
+    if(method==='DELETE')return true;
+    const txt=await r.text();
+    return txt?JSON.parse(txt):[];
+  }catch(e){console.warn('Supabase fetch failed:',e);return null;}
 }
 async function sbUpsert(table,rows){
   if(!rows.length||!hasSB())return;
-  // journals and statuses use 'key' as PK, trainees/entries use 'id'
   const conflictCol=rows[0]&&rows[0].key?'key':'id';
-  return sbFetch(table,'POST',rows,`?on_conflict=${conflictCol}`);
+  const url=`${SB_URL}/rest/v1/${table}?on_conflict=${conflictCol}`;
+  try{
+    const r=await fetch(url,{
+      method:'POST',
+      headers:{
+        'apikey':SB_KEY,
+        'Authorization':`Bearer ${SB_KEY}`,
+        'Content-Type':'application/json',
+        'Prefer':'resolution=merge-duplicates,return=minimal'
+      },
+      body:JSON.stringify(rows)
+    });
+    if(!r.ok){const e=await r.text();console.error('Supabase upsert error:',e);return null;}
+    return true;
+  }catch(e){console.warn('Supabase upsert failed:',e);return null;}
 }
 async function sbGetAll(table,filter=''){
   if(!hasSB())return null;
