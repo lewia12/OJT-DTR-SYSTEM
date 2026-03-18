@@ -581,7 +581,7 @@ let activeId = null;
 let wkTarget = 40;
 let calY, calM, selDate = null;
 let deferredPrompt = null;
-let syncing = false, syncTimer = null;
+let syncing = false, syncTimer = null, pendingWrite = false;
 
 // ════════════════════════════════════════
 // INDEXEDDB
@@ -770,23 +770,33 @@ async function flushQueue() {
 // WRITE HELPERS — Supabase first, queue if offline
 // ═══════════════════════════════════════
 async function writeUpsert(table, rows, col='id') {
-  if (SB_OK && navigator.onLine) {
-    const ok = await sbUpsert(table, rows, col);
-    if (!ok) await enqueue('upsert', table, rows, col);
-  } else {
-    await enqueue('upsert', table, rows, col);
+  pendingWrite = true;
+  try {
+    if (SB_OK && navigator.onLine) {
+      const ok = await sbUpsert(table, rows, col);
+      if (!ok) await enqueue('upsert', table, rows, col);
+    } else {
+      await enqueue('upsert', table, rows, col);
+    }
+  } finally {
+    pendingWrite = false;
   }
 }
 
 async function writeDelete(table, ids, col='id') {
   console.log('[writeDelete] table:', table, 'ids:', ids, 'online:', navigator.onLine, 'SB_OK:', SB_OK);
-  if (SB_OK && navigator.onLine) {
-    const ok = await sbDeleteRows(table, ids, col);
-    console.log('[writeDelete] result:', ok);
-    if (!ok) await enqueue('delete', table, ids, col);
-  } else {
-    console.log('[writeDelete] offline — queuing');
-    await enqueue('delete', table, ids, col);
+  pendingWrite = true;
+  try {
+    if (SB_OK && navigator.onLine) {
+      const ok = await sbDeleteRows(table, ids, col);
+      console.log('[writeDelete] result:', ok);
+      if (!ok) await enqueue('delete', table, ids, col);
+    } else {
+      console.log('[writeDelete] offline — queuing');
+      await enqueue('delete', table, ids, col);
+    }
+  } finally {
+    pendingWrite = false;
   }
 }
 
@@ -805,11 +815,11 @@ function setSyncUI(state, msg) {
 function scheduleSync(delay=1500) {
   if (!SB_OK || !navigator.onLine) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(doSync, delay);
+  syncTimer = setTimeout(() => { if (!pendingWrite) doSync(); }, delay);
 }
 
 async function doSync() {
-  if (!SB_OK || !navigator.onLine || syncing) return;
+  if (!SB_OK || !navigator.onLine || syncing || pendingWrite) return;
   syncing = true; setSyncUI('sync','Syncing…');
   try {
     await flushQueue();
@@ -1006,7 +1016,14 @@ async function saveTrainee() {
     activeId = id;
     toast('Trainee added!');
   }
-  await persistAll(); closeOv('traineeOv'); renderAll();
+  const saved = eid ? trainees.find(t => t.id == eid) : trainees[trainees.length - 1];
+  await persistAll();
+  if (saved) await writeUpsert('ojt_trainees', [{
+    id: String(saved.id), name: saved.name, company: saved.company || '',
+    required: saved.required, color: saved.color,
+    updated_at: saved.updatedAt || new Date().toISOString()
+  }], 'id');
+  closeOv('traineeOv'); renderAll();
 }
 async function deleteTrainee() {
   const eid = Number(document.getElementById('traineeEditId').value);
@@ -1543,13 +1560,14 @@ function toast(msg, err=false) {
 // SYNC INIT
 // ════════════════════════════════════════
 function initSync() {
-  window.addEventListener('online',  () => { setSyncUI('sync','Back online…'); doSync(); });
-  window.addEventListener('offline', () => setSyncUI('off','Offline — changes queued'));
   if (!SB_OK) { setSyncUI('off','Supabase not configured'); return; }
   updateOnline();
+  // Single online/offline listeners — no duplicates
   window.addEventListener('online',  () => { updateOnline(); doSync(); });
-  window.addEventListener('offline', updateOnline);
-  setInterval(() => { if(navigator.onLine) doSync(); }, 30000);
+  window.addEventListener('offline', () => { updateOnline(); });
+  // Periodic sync every 60s (increased to reduce race window)
+  setInterval(() => { if (navigator.onLine && !syncing) doSync(); }, 60000);
+  // Initial sync on load
   if (navigator.onLine) doSync();
 }
 function updateOnline() {
