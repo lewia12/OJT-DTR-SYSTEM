@@ -318,7 +318,7 @@ tbody td{padding:8px 12px;font-size:11px;vertical-align:middle;}
 <div class="sync-bar" id="syncBar">
   <div class="sync-dot offline" id="syncDot"></div>
   <span id="syncMsg">Not connected to Supabase</span>
-  <button class="sync-btn" onclick="openCfg()" id="syncCfgBtn">⚙ Configure</button>
+  <button class="sync-btn" onclick="openCfg()" id="syncCfgBtn" style="display:none">⚙ Configure</button>
   <button class="sync-btn" onclick="manualSync()" id="syncNowBtn" style="display:none">↻ Sync Now</button>
 </div>
 <!-- TRAINEE DROPDOWN -->
@@ -595,8 +595,20 @@ let cY,cM,selD=null,dP=null;
 // ═══════════════════════════════
 // SUPABASE CONFIG
 // ═══════════════════════════════
+// ── HARDCODED SUPABASE CREDENTIALS ──
+// Fill these in before uploading to GitHub.
+// The anon key is safe to expose — Supabase RLS controls access.
+const SB_URL_DEFAULT = 'https://edtwmxadfqhmmilucvol.supabase.co';   // e.g. https://xxxx.supabase.co
+const SB_KEY_DEFAULT = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImVkdHdteGFkZnFobW1pbHVjdm9sIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzM4MDExMjAsImV4cCI6MjA4OTM3NzEyMH0.ssNIJ6CoobfUo6FpEqF2vMIw5H427eMY5xhqH4GPMDo'; // eyJhbGci...
 let SB_URL='',SB_KEY='';
-function loadSBCfg(){SB_URL=localStorage.getItem('sb_url')||'';SB_KEY=localStorage.getItem('sb_key')||'';}
+function loadSBCfg(){
+  // Use localStorage override if set, otherwise use hardcoded defaults
+  SB_URL=localStorage.getItem('sb_url')||SB_URL_DEFAULT;
+  SB_KEY=localStorage.getItem('sb_key')||SB_KEY_DEFAULT;
+  // Clear placeholder values so hasSB() returns false properly
+  if(SB_URL==='YOUR_SUPABASE_URL')SB_URL='';
+  if(SB_KEY==='YOUR_SUPABASE_ANON_KEY')SB_KEY='';
+}
 function saveSBCfg(url,key){localStorage.setItem('sb_url',url);localStorage.setItem('sb_key',key);SB_URL=url;SB_KEY=key;}
 function hasSB(){return !!(SB_URL&&SB_KEY);}
 
@@ -1344,12 +1356,12 @@ function initSync(){
   // Periodic sync every 30s when online
   setInterval(()=>{if(syncOnline&&hasSB())syncFlush();},30000);
   if(hasSB())setSyncStatus('syncing','Connecting to Supabase…');
-  else setSyncStatus('offline','Not connected — configure Supabase below');
+  else setSyncStatus('offline','Supabase not configured');
 }
 
 function updateOnlineStatus(){
   syncOnline=navigator.onLine;
-  if(!hasSB()){setSyncStatus('offline','Not connected — ⚙ Configure Supabase');return;}
+  if(!hasSB()){setSyncStatus('offline','Supabase not configured — check credentials in HTML');return;}
   if(syncOnline) setSyncStatus('online','Online');
   else setSyncStatus('offline','Offline — changes saved locally');
 }
@@ -1479,7 +1491,7 @@ async function persistMerged(){
 }
 
 async function manualSync(){
-  if(!hasSB()){openCfg();return;}
+  if(!hasSB()){toast('Supabase not configured. Check SB_URL_DEFAULT and SB_KEY_DEFAULT in the HTML file.',true);return;}
   if(!syncOnline){toast('You are offline. Changes will sync when back online.');return;}
   await syncFlush();
 }
