@@ -1647,94 +1647,354 @@ function installPWA() {
 function dismissPWA() { document.getElementById('pwaB').classList.remove('on'); localStorage.setItem('pwa_dismissed','1'); }
 
 // ════════════════════════════════════════
-// EXPORT EXCEL
+// EXPORT EXCEL — real .xlsx via SheetJS
 // ════════════════════════════════════════
-function doExcelExport() {
+async function doExcelExport() {
   const t = getAT(); if (!t) return;
-  const ents = gEntries(); if (!ents.length) { toast('No entries.',true); return; }
-  const jm   = gJournals(); const sm = gStatuses();
-  const tot  = ents.reduce((s,e)=>s+e.hours,0);
-  const rem  = Math.max(0, t.required-tot);
-  let csv = `OJT LOGSHEET\nTrainee:,${t.name}\nCompany:,${t.company||'—'}\nRequired:,${t.required}\nRendered:,${fH(tot)}\nRemaining:,${fH(rem)}\n\n`;
-  csv += 'DATE,NAME,TIME IN,BREAK,TIME OUT,STATUS,HOURS,RUNNING,JOURNAL\n';
-  let run = 0;
-  ents.forEach(e => {
-    run += e.hours;
-    const st = resolveStatus(e.hours, sm[e.date]?.status, e.date);
-    const jt = (jm[e.date]?.text||'').replace(/,/g,';').replace(/\n/g,' ');
-    csv += `${e.date},${t.name},${f12(e.timeIn)},${e.breakMin>0?e.breakMin+'min':'—'},${f12(e.timeOut)},${st},${fH(e.hours)},${fH(run)},"${jt}"\n`;
+  const ents = gEntries(); if (!ents.length) { toast('No entries.', true); return; }
+  const jm = gJournals(); const sm = gStatuses();
+  const tot = ents.reduce((s,e) => s+e.hours, 0);
+  const rem = Math.max(0, t.required - tot);
+  const pct = Math.min(100, (tot/t.required)*100).toFixed(1);
+
+  if (!window.XLSX) {
+    toast('Loading Excel library…');
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  const wb = XLSX.utils.book_new();
+  const RED = 'C00000'; const WHITE = 'FFFFFF'; const BLACK = '000000';
+  const LGRAY = 'F2F2F2'; const YELLOW = 'FFF2CC';
+
+  const border = {
+    top:    {style:'thin', color:{rgb:BLACK}},
+    bottom: {style:'thin', color:{rgb:BLACK}},
+    left:   {style:'thin', color:{rgb:BLACK}},
+    right:  {style:'thin', color:{rgb:BLACK}},
+  };
+  const thickBorder = {
+    top:    {style:'medium', color:{rgb:BLACK}},
+    bottom: {style:'medium', color:{rgb:BLACK}},
+    left:   {style:'medium', color:{rgb:BLACK}},
+    right:  {style:'medium', color:{rgb:BLACK}},
+  };
+
+  const cell = (v, bold=false, bg=null, color=BLACK, sz=9, center=false, borders=border) => ({
+    v, t: typeof v === 'number' ? 'n' : 's',
+    s: {
+      font: {name:'Arial', sz, bold, color:{rgb:color}},
+      fill: bg ? {fgColor:{rgb:bg}} : {fgColor:{rgb:WHITE}},
+      alignment: {horizontal: center?'center':'left', vertical:'center', wrapText:true},
+      border: borders
+    }
   });
-  csv += `\n,,,,, TOTAL:,${fH(tot)}\n,,,,, REMAINING:,${fH(rem)}\n\nWEEKLY SUMMARY\nWeek,Range,Hours,Target,%\n`;
-  const wMap={};ents.forEach(e=>{const w=wKey(e.date);if(!wMap[w])wMap[w]=[];wMap[w].push(e);});
-  Object.keys(wMap).sort().forEach((w,i)=>{
-    const wH=wMap[w].reduce((s,e)=>s+e.hours,0);
-    csv+=`Week ${i+1},${wLabel(w)},${fH(wH)},${wkTarget}h,${((wH/wkTarget)*100).toFixed(0)}%\n`;
+
+  const rows = [];
+  const merges = [];
+  let r = 0;
+
+  // Title
+  rows.push([cell('OJT LOGSHEET', true, RED, WHITE, 14, true, thickBorder)]);
+  merges.push({s:{r:0,c:0}, e:{r:0,c:5}});
+  r++;
+
+  // Info rows
+  rows.push([
+    cell('TRAINEE:', true, LGRAY, BLACK, 8), cell(t.name, true, WHITE, BLACK, 9),
+    cell('COMPANY:', true, LGRAY, BLACK, 8), cell(t.company||'—', false, WHITE, BLACK, 9),
+    cell('REQUIRED HOURS:', true, LGRAY, BLACK, 8), cell(t.required, true, WHITE, RED, 10, true),
+  ]);
+  r++;
+  rows.push([
+    cell('TOTAL RENDERED:', true, LGRAY, BLACK, 8), cell(fH(tot), true, WHITE, BLACK, 9),
+    cell('REMAINING:', true, LGRAY, BLACK, 8), cell(fH(rem), true, WHITE, BLACK, 9),
+    cell('COMPLETION:', true, LGRAY, BLACK, 8),
+    cell(pct+'%', true, WHITE, parseFloat(pct)>=100?'22C97A':RED, 10, true),
+  ]);
+  r++;
+
+  // Spacer
+  rows.push([cell(''),cell(''),cell(''),cell(''),cell(''),cell('')]); r++;
+
+  // TIME merged header row
+  rows.push([
+    cell('DATE', true, RED, WHITE, 9, true),
+    cell('NAME', true, RED, WHITE, 9, true),
+    cell('TIME', true, RED, WHITE, 9, true),
+    cell('', true, RED, WHITE, 9, true),
+    cell('', true, RED, WHITE, 9, true),
+    cell('SIGNATURE', true, RED, WHITE, 9, true),
+  ]);
+  merges.push({s:{r,c:2}, e:{r,c:4}});
+  r++;
+
+  // Sub-headers
+  rows.push([
+    cell('', true, RED, WHITE, 8, true),
+    cell('', true, RED, WHITE, 8, true),
+    cell('IN', true, RED, WHITE, 8, true),
+    cell('No. of Break', true, RED, WHITE, 8, true),
+    cell('OUT', true, RED, WHITE, 8, true),
+    cell('', true, RED, WHITE, 8, true),
+  ]);
+  r++;
+
+  // Data rows grouped by date
+  const dateGroups = {};
+  ents.forEach(e => { if(!dateGroups[e.date]) dateGroups[e.date]=[]; dateGroups[e.date].push(e); });
+  const sortedDates = Object.keys(dateGroups).sort();
+
+  sortedDates.forEach((date, di) => {
+    dateGroups[date].forEach(e => {
+      const bg = r%2===0 ? WHITE : 'F9F9F9';
+      rows.push([
+        cell(fDate(e.date), false, bg, BLACK, 9, true),
+        cell(t.name, false, bg, BLACK, 9),
+        cell(f12(e.timeIn), false, bg, BLACK, 9, true),
+        cell(e.breakMin>0 ? e.breakMin+'m' : '', false, bg, BLACK, 9, true),
+        cell(f12(e.timeOut), false, bg, BLACK, 9, true),
+        cell('', false, bg, BLACK, 9),
+      ]);
+      r++;
+    });
+    if (di < sortedDates.length - 1) {
+      rows.push([cell(''),cell(''),cell(''),cell(''),cell(''),cell('')]); r++;
+    }
   });
-  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-  a.download=`OJT_${t.name.replace(/\s/g,'_')}.csv`;a.click();toast('Exported!');
+
+  // Totals
+  rows.push([
+    cell('',false,YELLOW),cell('',false,YELLOW),cell('',false,YELLOW),cell('',false,YELLOW),
+    cell('TOTAL HOURS RENDERED:', true, YELLOW, BLACK, 9, true),
+    cell(fH(tot), true, YELLOW, RED, 10, true),
+  ]);
+  merges.push({s:{r,c:0}, e:{r,c:3}}); r++;
+  rows.push([
+    cell('',false,YELLOW),cell('',false,YELLOW),cell('',false,YELLOW),cell('',false,YELLOW),
+    cell('REMAINING HOURS:', true, YELLOW, BLACK, 9, true),
+    cell(fH(rem), true, YELLOW, RED, 10, true),
+  ]);
+  r++;
+
+  // Signature rows
+  rows.push([cell('')]); r++;
+  rows.push([
+    cell('Prepared by:', true, LGRAY, BLACK, 8, true),
+    cell('', false, WHITE, BLACK, 8),
+    cell('Noted by:', true, LGRAY, BLACK, 8, true),
+    cell('', false, WHITE, BLACK, 8),
+    cell('Approved by:', true, LGRAY, BLACK, 8, true),
+    cell('', false, WHITE, BLACK, 8),
+  ]); r++;
+  rows.push([cell(''),cell(''),cell(''),cell(''),cell(''),cell('')]); r++;
+  rows.push([cell(''),cell(''),cell(''),cell(''),cell(''),cell('')]); r++;
+  rows.push([cell(''),cell(''),cell(''),cell(''),cell(''),cell('')]); r++;
+  rows.push([
+    cell("Trainee's Signature over Printed Name", false, LGRAY, BLACK, 7, true),
+    cell('', false, WHITE, BLACK, 7),
+    cell('Immediate Supervisor / Company Mentor', false, LGRAY, BLACK, 7, true),
+    cell('', false, WHITE, BLACK, 7),
+    cell('OJT Coordinator / School Representative', false, LGRAY, BLACK, 7, true),
+    cell('', false, WHITE, BLACK, 7),
+  ]);
+
+  const ws1 = XLSX.utils.aoa_to_sheet(rows);
+  ws1['!merges'] = merges;
+  ws1['!cols'] = [{wch:14},{wch:24},{wch:10},{wch:12},{wch:10},{wch:22}];
+
+  // Weekly Summary sheet
+  const wRows = [
+    [cell('WEEKLY SUMMARY',true,RED,WHITE,12,true)],
+    [cell('Week',true,RED,WHITE,9,true), cell('Date Range',true,RED,WHITE,9,true),
+     cell('Hours',true,RED,WHITE,9,true), cell('Target',true,RED,WHITE,9,true),
+     cell('% of Target',true,RED,WHITE,9,true)],
+  ];
+  const wMerges = [{s:{r:0,c:0},e:{r:0,c:4}}];
+  const wMap = {};
+  ents.forEach(e => { const w=wKey(e.date); if(!wMap[w])wMap[w]=[]; wMap[w].push(e); });
+  Object.keys(wMap).sort().forEach((w,i) => {
+    const wH = wMap[w].reduce((s,e)=>s+e.hours,0);
+    const pctW = ((wH/wkTarget)*100).toFixed(0);
+    const bg = wH>=wkTarget ? 'E2EFDA' : WHITE;
+    wRows.push([
+      cell(`Week ${i+1}`, false, bg, BLACK, 9, true),
+      cell(wLabel(w), false, bg, BLACK, 9),
+      cell(fH(wH), true, bg, wH>=wkTarget?'22C97A':BLACK, 9, true),
+      cell(wkTarget+'h', false, bg, BLACK, 9, true),
+      cell(pctW+'%', true, bg, wH>=wkTarget?'22C97A':RED, 9, true),
+    ]);
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(wRows);
+  ws2['!merges'] = wMerges;
+  ws2['!cols'] = [{wch:10},{wch:24},{wch:12},{wch:10},{wch:12}];
+
+  XLSX.utils.book_append_sheet(wb, ws1, 'OJT Logsheet');
+  XLSX.utils.book_append_sheet(wb, ws2, 'Weekly Summary');
+  XLSX.writeFile(wb, `OJT_DTR_${t.name.replace(/\s/g,'_')}.xlsx`);
+  toast('Excel file downloaded!');
 }
 
 // ════════════════════════════════════════
-// EXPORT PDF
+// EXPORT PDF — real .pdf via jsPDF
 // ════════════════════════════════════════
-function doPDFExport() {
+async function doPDFExport() {
   const t = getAT(); if (!t) return;
-  const ents = gEntries(); if (!ents.length) { toast('No entries.',true); return; }
-  const jm   = gJournals(); const sm = gStatuses();
-  const tot  = ents.reduce((s,e)=>s+e.hours,0);
-  const rem  = Math.max(0, t.required-tot);
-  const pct  = Math.min(100,(tot/t.required)*100).toFixed(1);
-  const stC  = {full:'#22c97a',partial:'#e8a020',short:'#e84560',absent:'#8fa3bb',holiday:'#a07ae8',nowork:'#4d647d'};
-  let rows=''; let run=0;
-  ents.forEach(e=>{
-    run+=e.hours;
-    const st=resolveStatus(e.hours,sm[e.date]?.status,e.date);
-    const jt=(jm[e.date]?.text||'').substring(0,90);
-    rows+=`<tr><td>${fDate(e.date)}</td><td>${t.name}</td><td>${f12(e.timeIn)}</td><td>${e.breakMin>0?e.breakMin+'m':'—'}</td>
-      <td>${f12(e.timeOut)}</td><td style="color:${stC[st]};font-weight:700;font-size:8px">${st.toUpperCase()}</td>
-      <td><strong>${fH(e.hours)}</strong></td><td style="text-align:left;font-size:9px">${jt?`<em style="color:#777">${jt}${(jm[e.date]?.text||'').length>90?'…':''}</em>`:''}</td></tr>`;
+  const ents = gEntries(); if (!ents.length) { toast('No entries.', true); return; }
+  const sm = gStatuses();
+  const tot = ents.reduce((s,e) => s+e.hours, 0);
+  const rem = Math.max(0, t.required - tot);
+  const pct = Math.min(100, (tot/t.required)*100).toFixed(1);
+
+  if (!window.jspdf) {
+    toast('Loading PDF library…');
+    await new Promise((res,rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+      s.onload = res; s.onerror = rej;
+      document.head.appendChild(s);
+    });
+  }
+
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation:'landscape', unit:'mm', format:'a4' });
+  const W = 297; const ml = 10; const mr = 10; const mt = 10;
+  const TW = W - ml - mr;
+  const RED = [192,0,0]; const BLACK = [0,0,0];
+  const LGRAY = [242,242,242]; const YELLOW = [255,242,204];
+
+  let y = mt;
+
+  // Title
+  doc.setFillColor(...RED); doc.rect(ml, y, TW, 9, 'F');
+  doc.setDrawColor(...BLACK); doc.setLineWidth(0.5); doc.rect(ml, y, TW, 9, 'S');
+  doc.setFont('helvetica','bold'); doc.setFontSize(16); doc.setTextColor(255,255,255);
+  doc.text('OJT LOGSHEET', W/2, y+6.2, {align:'center'});
+  y += 9;
+
+  // Info strip
+  const infoH = 6;
+  const cols6 = [30,45,20,45,32,25];
+  const labels = ['TRAINEE:',t.name,'COMPANY:',t.company||'—','REQUIRED HOURS:',t.required+'h'];
+  const vals   = ['TOTAL RENDERED:',fH(tot),'REMAINING:',fH(rem),'COMPLETION:',pct+'%'];
+
+  [labels, vals].forEach(row => {
+    let ix = ml;
+    cols6.forEach((w,i) => {
+      const isLbl = i%2===0;
+      if (isLbl) { doc.setFillColor(...LGRAY); doc.rect(ix,y,w,infoH,'F'); }
+      doc.setDrawColor(...BLACK); doc.setLineWidth(0.2); doc.rect(ix,y,w,infoH,'S');
+      doc.setFont('helvetica', isLbl?'bold':'normal');
+      doc.setFontSize(isLbl?7:8);
+      const isAccent = i===5;
+      doc.setTextColor(...(isAccent ? (parseFloat(pct)>=100?[34,201,122]:RED) : BLACK));
+      const tx = isAccent ? ix+w/2 : ix+1.5;
+      doc.text(String(row[i]), tx, y+infoH/2+1.3, {align:isAccent?'center':'left'});
+      ix += w;
+    });
+    y += infoH;
   });
-  const w=window.open('','_blank');
-  w.document.write(`<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>OJT – ${t.name}</title>
-  <style>@page{size:A4 landscape;margin:14mm 11mm;}body{font-family:'Segoe UI',sans-serif;font-size:9.5px;color:#111;}
-  .top{text-align:center;padding-bottom:9px;border-bottom:3px solid #c00;margin-bottom:11px;}
-  h1{font-size:21px;color:#c00;letter-spacing:.15em;font-weight:900;}
-  .s{font-size:8px;color:#888;text-transform:uppercase;letter-spacing:.08em;}
-  .meta{display:grid;grid-template-columns:repeat(3,1fr);border:1px solid #ddd;margin-bottom:11px;border-radius:3px;overflow:hidden;}
-  .mc{padding:6px 9px;border-right:1px solid #ddd;}.mc:last-child{border-right:none;}
-  .ml{font-size:7px;text-transform:uppercase;color:#aaa;letter-spacing:.07em;margin-bottom:1px;}
-  .mv{font-size:12px;font-weight:700;}.mv.r{color:#c00;font-size:15px;}
-  .pb{background:#eee;border-radius:99px;height:6px;overflow:hidden;margin-top:4px;}
-  .pf{height:100%;border-radius:99px;background:${parseFloat(pct)>=100?'#22c97a':'#c00'};width:${pct}%;}
-  table{width:100%;border-collapse:collapse;margin-bottom:11px;}
-  th{background:#c00;color:#fff;padding:6px 7px;font-size:7.5px;text-transform:uppercase;letter-spacing:.07em;}
-  td{padding:5px 7px;border-bottom:1px solid #f0f0f0;vertical-align:middle;text-align:center;}
-  tr:nth-child(even) td{background:#fafafa;}
-  .tot td{background:#fff8e1;font-weight:700;border-top:2px solid #c00;}
-  .sig{display:grid;grid-template-columns:1fr 1fr 1fr;gap:20px;margin-top:18px;}
-  .sl{border-top:1px solid #333;margin-top:30px;padding-top:4px;font-size:8px;color:#777;text-align:center;}
-  @media print{body{margin:0;}}</style></head><body>
-  <div class="top"><h1>OJT LOGSHEET</h1><div class="s">On-the-Job Training Daily Time Record</div></div>
-  <div class="meta">
-    <div class="mc"><div class="ml">Trainee</div><div class="mv">${t.name}</div></div>
-    <div class="mc"><div class="ml">Company</div><div class="mv">${t.company||'—'}</div></div>
-    <div class="mc"><div class="ml">Required</div><div class="mv r">${t.required}h</div></div>
-    <div class="mc"><div class="ml">Rendered</div><div class="mv">${fH(tot)}</div></div>
-    <div class="mc"><div class="ml">Remaining</div><div class="mv">${fH(rem)}</div></div>
-    <div class="mc"><div class="ml">Completion — ${pct}%</div><div class="pb"><div class="pf"></div></div></div>
-  </div>
-  <table><thead><tr><th>DATE</th><th>NAME</th><th>TIME IN</th><th>BREAK</th><th>TIME OUT</th><th>STATUS</th><th>HRS</th><th style="text-align:left">JOURNAL / NOTES</th></tr></thead>
-  <tbody>${rows}
-    <tr class="tot"><td colspan="6" style="text-align:right">TOTAL:</td><td>${fH(tot)}</td><td></td></tr>
-    <tr class="tot"><td colspan="6" style="text-align:right">REMAINING:</td><td>${fH(rem)}</td><td></td></tr>
-  </tbody></table>
-  <div class="sig">
-    <div><div class="sl">Trainee's Signature over Printed Name</div></div>
-    <div><div class="sl">Immediate Supervisor / Company Mentor</div></div>
-    <div><div class="sl">OJT Coordinator / School Representative</div></div>
-  </div>
-  <script>window.onload=()=>window.print();<\/script></body></html>`);
-  w.document.close();
+  y += 2;
+
+  // Column widths: DATE | NAME | IN | No. of Break | OUT | SIGNATURE
+  const cw = [24,52,18,22,18,63];
+  const hh = 5;
+
+  // TIME merged header
+  doc.setFillColor(...RED); doc.rect(ml,y,TW,hh,'F');
+  doc.setDrawColor(...BLACK); doc.setLineWidth(0.3); doc.rect(ml,y,TW,hh,'S');
+  let hx = ml;
+  ['DATE','NAME','TIME','','','SIGNATURE'].forEach((lbl,i) => {
+    doc.rect(hx,y,cw[i],hh,'S');
+    if (i===2) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+      doc.text('TIME', hx+(cw[2]+cw[3]+cw[4])/2, y+hh/2+1.2, {align:'center'});
+    } else if (i!==3 && i!==4) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(7); doc.setTextColor(255,255,255);
+      doc.text(lbl, hx+cw[i]/2, y+hh/2+1.2, {align:'center'});
+    }
+    hx += cw[i];
+  });
+  y += hh;
+
+  // Sub-headers
+  doc.setFillColor(...RED); hx = ml;
+  ['','','IN','No. of Break','OUT',''].forEach((lbl,i) => {
+    doc.rect(hx,y,cw[i],hh,'FS');
+    doc.setDrawColor(...BLACK); doc.rect(hx,y,cw[i],hh,'S');
+    if (lbl) {
+      doc.setFont('helvetica','bold'); doc.setFontSize(6.5); doc.setTextColor(255,255,255);
+      doc.text(lbl, hx+cw[i]/2, y+hh/2+1.2, {align:'center'});
+    }
+    hx += cw[i];
+  });
+  y += hh;
+
+  // Data rows
+  const rh = 7;
+  const dateGroups = {};
+  ents.forEach(e => { if(!dateGroups[e.date]) dateGroups[e.date]=[]; dateGroups[e.date].push(e); });
+  const sortedDates = Object.keys(dateGroups).sort();
+
+  let rowIdx = 0;
+  sortedDates.forEach((date, di) => {
+    if (y + rh > 180) { doc.addPage(); y = mt; }
+    dateGroups[date].forEach(e => {
+      const useBg = rowIdx%2!==0;
+      hx = ml;
+      [{v:fDate(e.date),a:'center'},{v:t.name,a:'left'},{v:f12(e.timeIn),a:'center'},
+       {v:e.breakMin>0?e.breakMin+'m':'',a:'center'},{v:f12(e.timeOut),a:'center'},{v:'',a:'left'}]
+      .forEach((d,i) => {
+        if (useBg) { doc.setFillColor(...LGRAY); doc.rect(hx,y,cw[i],rh,'F'); }
+        doc.setDrawColor(...BLACK); doc.setLineWidth(0.15); doc.rect(hx,y,cw[i],rh,'S');
+        doc.setFont('helvetica','normal'); doc.setFontSize(7.5); doc.setTextColor(...BLACK);
+        const tx = d.a==='center' ? hx+cw[i]/2 : hx+1.5;
+        doc.text(String(d.v), tx, y+rh/2+1.3, {align:d.a});
+        hx += cw[i];
+      });
+      y += rh; rowIdx++;
+    });
+    if (di < sortedDates.length-1) {
+      hx = ml;
+      cw.forEach(w => { doc.setDrawColor(220,220,220); doc.setLineWidth(0.1); doc.rect(hx,y,w,4,'S'); hx+=w; });
+      y += 4;
+    }
+  });
+
+  // Totals
+  y += 3;
+  if (y+14 > 190) { doc.addPage(); y = mt; }
+  [['TOTAL HOURS RENDERED:', fH(tot)], ['REMAINING HOURS:', fH(rem)]].forEach(([lbl,val]) => {
+    doc.setFillColor(...YELLOW); doc.rect(ml,y,TW,6,'F');
+    doc.setDrawColor(...BLACK); doc.setLineWidth(0.3); doc.rect(ml,y,TW,6,'S');
+    doc.setFont('helvetica','bold'); doc.setFontSize(8); doc.setTextColor(...BLACK);
+    doc.text(lbl, ml+TW-65, y+4);
+    doc.setTextColor(...RED); doc.setFontSize(9);
+    doc.text(val, ml+TW-1.5, y+4, {align:'right'});
+    y += 6;
+  });
+
+  // Signature lines
+  y += 8;
+  if (y+20 > 200) { doc.addPage(); y = mt; }
+  const sigW = TW/3;
+  ['Trainee\'s Signature over Printed Name',
+   'Immediate Supervisor / Company Mentor',
+   'OJT Coordinator / School Representative'].forEach((lbl,i) => {
+    const sx = ml + i*sigW + 4;
+    const lineY = y + 14;
+    doc.setDrawColor(...BLACK); doc.setLineWidth(0.4);
+    doc.line(sx, lineY, sx+sigW-8, lineY);
+    doc.setFont('helvetica','normal'); doc.setFontSize(6.5); doc.setTextColor(100,100,100);
+    doc.text(lbl, sx+(sigW-8)/2, lineY+3.5, {align:'center'});
+  });
+
+  doc.save(`OJT_DTR_${t.name.replace(/\s/g,'_')}.pdf`);
+  toast('PDF downloaded!');
 }
 </script>
 </body>
