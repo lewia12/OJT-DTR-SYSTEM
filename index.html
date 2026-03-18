@@ -793,6 +793,14 @@ async function pullRemote() {
     const id = Number(r.id);
     const ex = trainees.find(t => t.id === id);
     if (!ex || r.updated_at > (ex.updatedAt || '')) {
+      // Honour soft deletes from other devices
+      if (r.deleted) {
+        trainees = trainees.filter(t => t.id !== id);
+        delete entries[id]; delete journals[id]; delete statuses[id];
+        if (activeId === id && trainees.length > 0) activeId = trainees[0].id;
+        changed = true;
+        return;
+      }
       const mapped = {id, name: r.name, company: r.company, required: r.required, color: r.color, updatedAt: r.updated_at, dirty: 0};
       if (!ex) trainees.push(mapped); else Object.assign(ex, mapped);
       changed = true;
@@ -953,6 +961,16 @@ async function deleteTrainee() {
   const eid = Number(document.getElementById('traineeEditId').value);
   if (trainees.length <= 1) { toast('Cannot delete last trainee.', true); return; }
   if (!confirm('Delete this trainee and all their data?')) return;
+  // Soft delete — push deleted=true to Supabase BEFORE removing locally
+  // This prevents sync from restoring the trainee on next pull
+  const t = trainees.find(x => x.id === eid);
+  if (t && hasSB() && navigator.onLine) {
+    await sbUpsert('ojt_trainees', [{
+      id: String(eid), name: t.name, company: t.company || '',
+      required: t.required, color: t.color,
+      deleted: true, updated_at: new Date().toISOString()
+    }], 'id');
+  }
   trainees = trainees.filter(t => t.id !== eid);
   delete entries[eid]; delete journals[eid]; delete statuses[eid];
   if (activeId === eid) activeId = trainees[0].id;
