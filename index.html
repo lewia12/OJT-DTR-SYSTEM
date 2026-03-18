@@ -604,6 +604,8 @@ function openDB() {
         d.createObjectStore('statuses', {keyPath: 'key'});
       if (!d.objectStoreNames.contains('settings'))
         d.createObjectStore('settings', {keyPath: 'key'});
+      if (!d.objectStoreNames.contains('queue'))
+        d.createObjectStore('queue', {keyPath: 'id'});
     };
     req.onsuccess = e => { DB = e.target.result; res(); };
     req.onerror   = e => rej(e.target.error);
@@ -673,36 +675,46 @@ async function loadFromIDB() {
   wkTarget = wt  ? wt.value  : 40;
 }
 
-async function persistAll(markDirty = true) {
-  const ts = new Date().toISOString();
-  await idbClear('trainees');
-  for (const t of trainees)
-    await idbPut('trainees', {...t, dirty: markDirty ? 1 : (t.dirty || 0)});
-  await idbClear('entries');
-  for (const tid of Object.keys(entries))
-    for (const e of entries[tid])
-      await idbPut('entries', {...e, traineeId: Number(tid), dirty: markDirty ? 1 : (e.dirty || 0)});
-  await idbClear('journals');
-  for (const tid of Object.keys(journals))
-    for (const date of Object.keys(journals[tid])) {
-      const j = journals[tid][date];
-      if (j && j.text)
-        await idbPut('journals', {key: `${tid}~~${date}`, traineeId: Number(tid), date, text: j.text, updatedAt: j.updatedAt || ts, dirty: markDirty ? 1 : 0});
-    }
-  await idbClear('statuses');
-  for (const tid of Object.keys(statuses))
-    for (const date of Object.keys(statuses[tid])) {
-      const st = statuses[tid][date];
-      if (st && st.status)
-        await idbPut('statuses', {key: `${tid}~~${date}`, traineeId: Number(tid), date, status: st.status, updatedAt: st.updatedAt || ts, dirty: markDirty ? 1 : 0});
-    }
-  await idbPut('settings', {key: 'activeId', value: activeId});
-  await idbPut('settings', {key: 'wkTarget', value: wkTarget});
-  if (markDirty) scheduleSync();
+// ════════════════════════════════════════
+// SUPABASE — HTTP helpers
+// ════════════════════════════════════════
+async function sbUpsert(table, rows, conflictCol) {
+  if (!rows.length) return true;
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?on_conflict=${conflictCol}`, {
+    method: 'POST',
+    headers: {
+      'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`,
+      'Content-Type': 'application/json',
+      'Prefer': 'resolution=merge-duplicates,return=minimal'
+    },
+    body: JSON.stringify(rows)
+  });
+  if (!res.ok) { console.error('sbUpsert', table, await res.text()); return false; }
+  return true;
+}
+
+async function sbDelete(table, ids, col = 'id') {
+  if (!ids.length) return true;
+  // Use IN filter to delete multiple rows at once
+  const list = ids.map(id => `"${id}"`).join(',');
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?${col}=in.(${list})`, {
+    method: 'DELETE',
+    headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Prefer': 'return=minimal' }
+  });
+  if (!res.ok) { console.error('sbDelete', table, await res.text()); return false; }
+  return true;
+}
+
+async function sbGet(table) {
+  const res = await fetch(`${SB_URL}/rest/v1/${table}?order=updated_at.asc`, {
+    headers: { 'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Accept': 'application/json' }
+  });
+  if (!res.ok) throw new Error(`sbGet ${table}: ${await res.text()}`);
+  return res.json();
 }
 
 // ════════════════════════════════════════
-// SUPABASE SYNC
+// SYNC UI
 // ════════════════════════════════════════
 function setSyncUI(state, msg) {
   const dot = document.getElementById('syncDot');
@@ -712,135 +724,173 @@ function setSyncUI(state, msg) {
   txt.textContent = msg;
 }
 
-function scheduleSync() {
-  if (!SB_OK || !navigator.onLine) return;
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(doSync, 1500);
+// ════════════════════════════════════════
+// PERSIST TO IDB (local cache only, no dirty flag)
+// ════════════════════════════════════════
+async function persistAll() {
+  const ts = nowISO();
+  await idbClear('trainees');
+  for (const t of trainees)
+    await idbPut('trainees', {...t});
+  await idbClear('entries');
+  for (const tid of Object.keys(entries))
+    for (const e of entries[tid])
+      await idbPut('entries', {...e, traineeId: Number(tid)});
+  await idbClear('journals');
+  for (const tid of Object.keys(journals))
+    for (const date of Object.keys(journals[tid])) {
+      const j = journals[tid][date];
+      if (j && j.text)
+        await idbPut('journals', {key: `${tid}~~${date}`, traineeId: Number(tid), date, text: j.text, updatedAt: j.updatedAt || ts});
+    }
+  await idbClear('statuses');
+  for (const tid of Object.keys(statuses))
+    for (const date of Object.keys(statuses[tid])) {
+      const st = statuses[tid][date];
+      if (st && st.status)
+        await idbPut('statuses', {key: `${tid}~~${date}`, traineeId: Number(tid), date, status: st.status, updatedAt: st.updatedAt || ts});
+    }
+  await idbPut('settings', {key: 'activeId', value: activeId});
+  await idbPut('settings', {key: 'wkTarget', value: wkTarget});
 }
 
-async function doSync() {
-  if (!SB_OK || !navigator.onLine || syncing) return;
-  syncing = true;
-  setSyncUI('sync', 'Syncing…');
-  try {
-    await pushDirty();
-    await pullRemote();
-    const t = new Date().toLocaleTimeString('en-PH', {hour:'2-digit', minute:'2-digit'});
-    setSyncUI('ok', `Synced · ${t}`);
-  } catch (err) {
-    console.error('Sync error:', err);
-    setSyncUI('err', 'Sync failed');
-  }
-  syncing = false;
+// ════════════════════════════════════════
+// OFFLINE QUEUE — pending ops when offline
+// ════════════════════════════════════════
+// Queue is stored in IDB store 'queue': [{id, op, table, payload, conflictCol}]
+function enqueue(op, table, payload, conflictCol = 'id') {
+  const item = {id: Date.now() + Math.random(), op, table, payload, conflictCol};
+  idbPut('queue', item);
 }
 
-// ── PUSH ──
-async function pushDirty() {
-  const [dT, dE, dJ, dSt] = await Promise.all([
-    idbAll('trainees'), idbAll('entries'), idbAll('journals'), idbAll('statuses')
-  ]);
-  const dirtyT  = dT.filter(r => r.dirty);
-  const dirtyE  = dE.filter(r => r.dirty);
-  const dirtyJ  = dJ.filter(r => r.dirty);
-  const dirtySt = dSt.filter(r => r.dirty);
-
-  if (dirtyT.length)  await sbUpsert('ojt_trainees', dirtyT.map(r  => ({id: String(r.id), name: r.name, company: r.company || '', required: r.required, color: r.color, deleted: r.deleted||false, updated_at: r.updatedAt || new Date().toISOString()})), 'id');
-  if (dirtyE.length)  await sbUpsert('ojt_entries',  dirtyE.map(r  => ({id: String(r.id), trainee_id: String(r.traineeId), date: r.date, time_in: r.timeIn, time_out: r.timeOut, break_min: r.breakMin, hours: r.hours, deleted: r.deleted||false, updated_at: r.updatedAt || new Date().toISOString()})), 'id');
-  if (dirtyJ.length)  await sbUpsert('ojt_journals', dirtyJ.map(r  => ({key: r.key, trainee_id: String(r.traineeId), date: r.date, text: r.text || '', updated_at: r.updatedAt || new Date().toISOString()})), 'key');
-  if (dirtySt.length) await sbUpsert('ojt_statuses', dirtySt.map(r => ({key: r.key, trainee_id: String(r.traineeId), date: r.date, status: r.status, updated_at: r.updatedAt || new Date().toISOString()})), 'key');
-
-  // Mark clean
-  for (const r of [...dirtyT,  ...dirtyE])  await idbPut(dirtyT.includes(r)  ? 'trainees' : 'entries',  {...r, dirty: 0});
-  for (const r of [...dirtyJ,  ...dirtySt]) await idbPut(dirtyJ.includes(r)  ? 'journals' : 'statuses', {...r, dirty: 0});
-}
-
-// ── SUPABASE UPSERT (dedicated fetch, correct headers) ──
-async function sbUpsert(table, rows, conflictCol) {
-  if (!rows.length) return;
-  const res = await fetch(`${SB_URL}/rest/v1/${table}?on_conflict=${conflictCol}`, {
-    method: 'POST',
-    headers: {
-      'apikey': SB_KEY,
-      'Authorization': `Bearer ${SB_KEY}`,
-      'Content-Type': 'application/json',
-      'Prefer': 'resolution=merge-duplicates,return=minimal'
-    },
-    body: JSON.stringify(rows)
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`sbUpsert ${table}: ${err}`);
+async function flushQueue() {
+  const queue = await idbAll('queue');
+  if (!queue.length) return;
+  setSyncUI('sync', `Flushing ${queue.length} offline ops…`);
+  for (const item of queue) {
+    let ok = false;
+    if (item.op === 'upsert') ok = await sbUpsert(item.table, item.payload, item.conflictCol);
+    if (item.op === 'delete') ok = await sbDelete(item.table, item.payload, item.conflictCol);
+    if (ok) await idbDel('queue', item.id);
   }
 }
 
-// ── SUPABASE GET ──
-async function sbGet(table, params = '') {
-  const res = await fetch(`${SB_URL}/rest/v1/${table}?order=updated_at.asc${params}`, {
-    headers: {'apikey': SB_KEY, 'Authorization': `Bearer ${SB_KEY}`, 'Accept': 'application/json'}
-  });
-  if (!res.ok) throw new Error(`sbGet ${table}: ${await res.text()}`);
-  return res.json();
+// ════════════════════════════════════════
+// WRITE OPERATIONS — Supabase first, IDB second
+// ════════════════════════════════════════
+
+// Write a single upsert: try Supabase immediately, queue if offline
+async function writeUpsert(table, rows, conflictCol = 'id') {
+  if (SB_OK && navigator.onLine) {
+    const ok = await sbUpsert(table, rows, conflictCol);
+    if (!ok) enqueue('upsert', table, rows, conflictCol); // queue on failure
+  } else {
+    enqueue('upsert', table, rows, conflictCol); // queue when offline
+  }
 }
 
-// ── PULL & MERGE ──
+// Write a delete: try Supabase immediately, queue if offline
+async function writeDelete(table, ids, col = 'id') {
+  if (SB_OK && navigator.onLine) {
+    const ok = await sbDelete(table, ids, col);
+    if (!ok) enqueue('delete', table, ids, col);
+  } else {
+    enqueue('delete', table, ids, col);
+  }
+}
+
+// ════════════════════════════════════════
+// PULL — download remote state into local
+// ════════════════════════════════════════
 async function pullRemote() {
   const [rT, rE, rJ, rSt] = await Promise.all([
-    sbGet('ojt_trainees'), sbGet('ojt_entries'), sbGet('ojt_journals'), sbGet('ojt_statuses')
+    sbGet('ojt_trainees'), sbGet('ojt_entries'),
+    sbGet('ojt_journals'), sbGet('ojt_statuses')
   ]);
-  let changed = false;
-  // Trainees
+
+  // Trainees — build from remote as source of truth
+  // Keep only trainees that exist in remote (remote deletions are real deletions)
+  const remoteIds = new Set(rT.map(r => Number(r.id)));
+  // Remove locally any trainee not in remote (it was deleted elsewhere)
+  trainees = trainees.filter(t => remoteIds.has(t.id));
   rT.forEach(r => {
     const id = Number(r.id);
     const ex = trainees.find(t => t.id === id);
-    if (!ex || r.updated_at > (ex.updatedAt || '')) {
-      if (r.deleted) {
-        trainees = trainees.filter(t => t.id !== id);
-        delete entries[id]; delete journals[id]; delete statuses[id];
-        if (activeId === id && trainees.length > 0) activeId = trainees[0].id;
-        changed = true; return;
-      }
-      const mapped = {id, name: r.name, company: r.company, required: r.required, color: r.color, updatedAt: r.updated_at, dirty: 0};
+    // Remote wins if newer or not in local
+    if (!ex || r.updated_at >= (ex.updatedAt || '')) {
+      const mapped = {id, name: r.name, company: r.company, required: r.required,
+                      color: r.color, updatedAt: r.updated_at};
       if (!ex) trainees.push(mapped); else Object.assign(ex, mapped);
-      changed = true;
     }
   });
-  // Entries
+
+  // Entries — same: remote is truth, missing = deleted
+  const remoteEntryIds = new Set(rE.map(r => Number(r.id)));
+  Object.keys(entries).forEach(tid => {
+    entries[tid] = entries[tid].filter(e => remoteEntryIds.has(e.id));
+  });
   rE.forEach(r => {
     const id = Number(r.id); const tid = Number(r.trainee_id);
     if (!entries[tid]) entries[tid] = [];
     const ex = entries[tid].find(e => e.id === id);
-    if (!ex || r.updated_at > (ex.updatedAt || '')) {
-      if (r.deleted) {
-        entries[tid] = entries[tid].filter(e => e.id !== id);
-        changed = true; return;
-      }
-      const mapped = {id, traineeId: tid, date: r.date, timeIn: r.time_in, timeOut: r.time_out, breakMin: r.break_min, hours: r.hours, updatedAt: r.updated_at, dirty: 0};
+    if (!ex || r.updated_at >= (ex.updatedAt || '')) {
+      const mapped = {id, traineeId: tid, date: r.date, timeIn: r.time_in,
+                      timeOut: r.time_out, breakMin: r.break_min, hours: r.hours,
+                      updatedAt: r.updated_at};
       if (!ex) entries[tid].push(mapped); else Object.assign(ex, mapped);
-      changed = true;
     }
   });
   Object.keys(entries).forEach(tid => entries[tid].sort((a,b) => a.date.localeCompare(b.date)));
+
   // Journals
   rJ.forEach(r => {
     const tid = String(r.trainee_id);
     if (!journals[tid]) journals[tid] = {};
     const ex = journals[tid][r.date];
-    if (!ex || r.updated_at > (ex.updatedAt || '')) {
+    if (!ex || r.updated_at >= (ex.updatedAt || ''))
       journals[tid][r.date] = {text: r.text, updatedAt: r.updated_at};
-      changed = true;
-    }
   });
+
   // Statuses
   rSt.forEach(r => {
     const tid = String(r.trainee_id);
     if (!statuses[tid]) statuses[tid] = {};
     const ex = statuses[tid][r.date];
-    if (!ex || r.updated_at > (ex.updatedAt || '')) {
+    if (!ex || r.updated_at >= (ex.updatedAt || ''))
       statuses[tid][r.date] = {status: r.status, updatedAt: r.updated_at};
-      changed = true;
-    }
   });
-  if (changed) { await persistAll(false); renderAll(); }
+
+  // Fix activeId if deleted remotely
+  if (!trainees.find(t => t.id === activeId) && trainees.length > 0)
+    activeId = trainees[0].id;
+
+  await persistAll();
+  renderAll();
+}
+
+// ════════════════════════════════════════
+// MAIN SYNC CYCLE
+// ════════════════════════════════════════
+async function doSync() {
+  if (!SB_OK || !navigator.onLine || syncing) return;
+  syncing = true;
+  setSyncUI('sync', 'Syncing…');
+  try {
+    await flushQueue();   // push any offline queued ops first
+    await pullRemote();   // then download latest from Supabase
+    const t = new Date().toLocaleTimeString('en-PH', {hour:'2-digit', minute:'2-digit'});
+    setSyncUI('ok', `Synced · ${t}`);
+  } catch (err) {
+    console.error('Sync error:', err);
+    setSyncUI('err', 'Sync failed — will retry');
+  }
+  syncing = false;
+}
+
+function scheduleSync(delay = 1500) {
+  if (!SB_OK || !navigator.onLine) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(doSync, delay);
 }
 
 // ════════════════════════════════════════
@@ -887,7 +937,14 @@ async function obSubmit() {
   const id = Date.now();
   trainees.push({id, name, company: co, required: hrs, color, updatedAt: new Date().toISOString(), dirty: 1});
   activeId = id;
-  await persistAll(true);
+  await persistAll();
+  await writeUpsert('ojt_trainees', [{
+    id: String(trainees[trainees.length-1].id), name: trainees[trainees.length-1].name,
+    company: trainees[trainees.length-1].company || '',
+    required: trainees[trainees.length-1].required,
+    color: trainees[trainees.length-1].color,
+    updated_at: nowISO()
+  }], 'id');
   document.getElementById('onboarding').classList.remove('show');
   renderAll(); setupPWA(); initSync();
   toast(`Welcome, ${name}!`);
@@ -957,27 +1014,29 @@ async function saveTrainee() {
     activeId = id;
     toast('Trainee added!');
   }
-  await persistAll(true); closeOv('traineeOv'); renderAll();
+  // Write to Supabase
+  const saved = eid ? trainees.find(t => t.id === eid) : trainees[trainees.length - 1];
+  await persistAll();
+  if (saved) await writeUpsert('ojt_trainees', [{
+    id: String(saved.id), name: saved.name, company: saved.company || '',
+    required: saved.required, color: saved.color, updated_at: saved.updatedAt || nowISO()
+  }], 'id');
+  closeOv('traineeOv'); renderAll();
 }
 async function deleteTrainee() {
   const eid = Number(document.getElementById('traineeEditId').value);
   if (trainees.length <= 1) { toast('Cannot delete last trainee.', true); return; }
   if (!confirm('Delete this trainee and all their data?')) return;
-  const t = trainees.find(x => x.id === eid);
-  // Push deleted=true to Supabase immediately so sync won't restore it
-  if (t && SB_OK && navigator.onLine) {
-    try {
-      await sbUpsert('ojt_trainees', [{
-        id: String(eid), name: t.name, company: t.company || '',
-        required: t.required, color: t.color,
-        deleted: true, updated_at: new Date().toISOString()
-      }], 'id');
-    } catch(e) { console.warn('Could not push trainee delete to Supabase:', e); }
-  }
-  trainees = trainees.filter(x => x.id !== eid);
+  // Collect entry IDs to delete from Supabase
+  const entryIds = (entries[eid] || []).map(e => String(e.id));
+  trainees = trainees.filter(t => t.id !== eid);
   delete entries[eid]; delete journals[eid]; delete statuses[eid];
   if (activeId === eid) activeId = trainees[0].id;
-  await persistAll(true); closeOv('traineeOv'); renderAll(); toast('Deleted.');
+  await persistAll();
+  // Delete from Supabase — entries first (FK constraint), then trainee
+  if (entryIds.length) await writeDelete('ojt_entries', entryIds, 'id');
+  await writeDelete('ojt_trainees', [String(eid)], 'id');
+  closeOv('traineeOv'); renderAll(); toast('Deleted.');
 }
 
 function toggleTdrop() {
@@ -1065,25 +1124,21 @@ async function addEntry() {
     if (!statuses[tid]) statuses[tid] = {};
     statuses[tid][date] = {status: st, updatedAt: ts};
   }
-  await persistAll(true); renderAll(); toast(`Added: ${fH(h)} on ${fDate(date)}`);
+  await persistAll();
+  await writeUpsert('ojt_entries', [{
+    id: String(entries[tid][entries[tid].length-1].id), trainee_id: String(tid),
+    date, time_in: tin, time_out: tout, break_min: brk, hours: h,
+    updated_at: ts
+  }], 'id');
+  renderAll(); toast(`Added: ${fH(h)} on ${fDate(date)}`);
 }
 async function delEntry(id) {
   const tid = activeId;
   if (!entries[tid]) return;
-  const entry = entries[tid].find(e => e.id === id);
-  // Push deleted=true to Supabase immediately so sync won't restore it
-  if (entry && SB_OK && navigator.onLine) {
-    try {
-      await sbUpsert('ojt_entries', [{
-        id: String(id), trainee_id: String(tid),
-        date: entry.date, time_in: entry.timeIn, time_out: entry.timeOut,
-        break_min: entry.breakMin, hours: entry.hours,
-        deleted: true, updated_at: new Date().toISOString()
-      }], 'id');
-    } catch(e) { console.warn('Could not push delete to Supabase:', e); }
-  }
   entries[tid] = entries[tid].filter(e => e.id !== id);
-  await persistAll(true); renderAll(); toast('Entry removed.');
+  await persistAll();
+  await writeDelete('ojt_entries', [String(id)], 'id');
+  renderAll(); toast('Entry removed.');
 }
 function openEdit(id) {
   const e  = (entries[activeId]||[]).find(x => x.id === id); if (!e) return;
@@ -1113,12 +1168,22 @@ async function saveEdit() {
   if (!statuses[tid]) statuses[tid] = {};
   if (st !== 'auto') statuses[tid][date] = {status: st, updatedAt: ts};
   else delete statuses[tid][date];
-  await persistAll(true); renderAll(); closeOv('editOv'); toast('Updated.');
+  const updated = entries[tid][i];
+  await persistAll();
+  await writeUpsert('ojt_entries', [{
+    id: String(updated.id), trainee_id: String(tid),
+    date: updated.date, time_in: updated.timeIn, time_out: updated.timeOut,
+    break_min: updated.breakMin, hours: updated.hours, updated_at: updated.updatedAt
+  }], 'id');
+  renderAll(); closeOv('editOv'); toast('Updated.');
 }
 async function clearAll() {
   if (!confirm('Delete ALL entries for this trainee?')) return;
+  const toDelete = (entries[activeId] || []).map(e => String(e.id));
   entries[activeId] = [];
-  await persistAll(true); renderAll(); toast('Cleared.');
+  await persistAll();
+  if (toDelete.length) await writeDelete('ojt_entries', toDelete, 'id');
+  renderAll(); toast('Cleared.');
 }
 
 // ════════════════════════════════════════
@@ -1422,17 +1487,17 @@ function renderJP(ds) {
 async function setDaySt(ds, st) {
   const tid = activeId; if (!statuses[tid]) statuses[tid]={};
   statuses[tid][ds] = {status: st, updatedAt: nowISO()};
-  await persistAll(true); renderAll(); if (selDate===ds) renderJP(ds);
+  await persistAll(); renderAll(); if (selDate===ds) renderJP(ds);
 }
 async function clrDaySt(ds) {
   const tid = activeId; if (statuses[tid]) delete statuses[tid][ds];
-  await persistAll(true); renderAll(); if (selDate===ds) renderJP(ds);
+  await persistAll(); renderAll(); if (selDate===ds) renderJP(ds);
 }
 async function jpSave(ds) {
   const tid = activeId; const txt = document.getElementById('jpTa')?.value || '';
   if (!journals[tid]) journals[tid]={};
   journals[tid][ds] = {text: txt, updatedAt: nowISO()};
-  await persistAll(true); renderCal();
+  await persistAll(); renderCal();
   const s = document.getElementById('jpSaved');
   if (s) { s.classList.add('on'); setTimeout(()=>s.classList.remove('on'), 2000); }
   toast('Journal saved!');
@@ -1440,7 +1505,7 @@ async function jpSave(ds) {
 async function jpClear(ds) {
   const ta = document.getElementById('jpTa'); if (ta) ta.value='';
   const tid = activeId; if (journals[tid]) journals[tid][ds]={text:'',updatedAt:nowISO()};
-  await persistAll(true); renderCal(); toast('Cleared.');
+  await persistAll(); renderCal(); toast('Cleared.');
 }
 async function jpQuickAdd(ds) {
   const tin = document.getElementById('qIn')?.value;
@@ -1451,11 +1516,11 @@ async function jpQuickAdd(ds) {
   entries[tid] = entries[tid].filter(e=>e.date!==ds);
   entries[tid].push({id:Date.now(),traineeId:tid,date:ds,timeIn:tin,timeOut:tout,breakMin:brk,hours:h,updatedAt:nowISO(),dirty:1});
   entries[tid].sort((a,b)=>a.date.localeCompare(b.date));
-  await persistAll(true); renderAll(); renderJP(ds); toast(`Added: ${fH(h)}`);
+  await persistAll(); renderAll(); renderJP(ds); toast(`Added: ${fH(h)}`);
 }
 async function jpDelEntry(ds) {
   const tid = activeId; if (entries[tid]) entries[tid]=entries[tid].filter(e=>e.date!==ds);
-  await persistAll(true); renderAll(); renderJP(ds); toast('Entry removed.');
+  await persistAll(); renderAll(); renderJP(ds); toast('Entry removed.');
 }
 
 // ════════════════════════════════════════
@@ -1492,6 +1557,8 @@ function toast(msg, err=false) {
 // SYNC INIT
 // ════════════════════════════════════════
 function initSync() {
+  window.addEventListener('online',  () => { setSyncUI('sync', 'Back online, syncing…'); doSync(); });
+  window.addEventListener('offline', () => setSyncUI('off', 'Offline — changes queued'));
   if (!SB_OK) { setSyncUI('off','Supabase not configured'); return; }
   updateOnline();
   window.addEventListener('online',  () => { updateOnline(); doSync(); });
