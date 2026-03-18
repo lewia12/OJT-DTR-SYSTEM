@@ -1,4 +1,4 @@
-const CACHE = 'ojt-dtr-v4';
+const CACHE = 'ojt-dtr-v4.5';
 const ASSETS = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png',
   'https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Outfit:wght@300;400;500;600;700;800&display=swap'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting())); });
